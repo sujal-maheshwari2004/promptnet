@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package promptnet.v1;
+
+option go_package = "promptnet/gen/promptnet/v1;promptnetv1";
+
+// PromptService serves validated prompts. Phase 1 is read-only over the wire;
+// writes happen via the `promptnet put` CLI until promptctl lands (Phase 3).
+service PromptService {
+  rpc GetPrompt(GetPromptRequest) returns (GetPromptResponse);
+}
+
+message GetPromptRequest {
+  // promptnet://org/repo/prompt-name
+  string uri = 1;
+}
+
+message GetPromptResponse {
+  string uri = 1;
+  string template = 2;
+  repeated string slots = 3;
+  // sha256 over template + slots; the Phase 2 cache key.
+  string version_hash = 4;
+}
