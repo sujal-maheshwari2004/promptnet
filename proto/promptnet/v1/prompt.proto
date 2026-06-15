@@ -8,6 +8,10 @@ option go_package = "promptnet/gen/promptnet/v1;promptnetv1";
 // writes happen via the `promptnet put` CLI until promptctl lands (Phase 3).
 service PromptService {
   rpc GetPrompt(GetPromptRequest) returns (GetPromptResponse);
+  // DiffPrompt runs the Semantic Propagation Diff between the stored prompt at
+  // `uri` (the original) and `new_template` (the edit), using the embedding
+  // model the server operator configured at startup.
+  rpc DiffPrompt(DiffPromptRequest) returns (DiffPromptResponse);
 }
 
 message GetPromptRequest {
@@ -21,4 +25,40 @@ message GetPromptResponse {
   repeated string slots = 3;
   // sha256 over template + slots; the Phase 2 cache key.
   string version_hash = 4;
+}
+
+message DiffPromptRequest {
+  string uri = 1;          // stored prompt to diff against (the original)
+  string new_template = 2; // the edited template
+}
+
+message DiffPromptResponse {
+  repeated Change changes = 1;
+}
+
+// Window is one point on a propagation curve (Signal 3).
+message Window {
+  int32 radius = 1;
+  double delta = 2;
+}
+
+// Change is one diff hunk with its three semantic signals.
+message Change {
+  // Signal 1 — the changed region (half-open line ranges, 0-based).
+  int32 old_start = 1;
+  int32 old_end = 2;
+  int32 new_start = 3;
+  int32 new_end = 4;
+  string kind = 5; // replace | insert | delete
+
+  // Signal 2 — semantic delta at the point of change.
+  double point_delta = 6;
+
+  // Signal 3 — propagation profile, each direction independent.
+  repeated Window up = 7;
+  repeated Window down = 8;
+  bool up_boundary = 9;   // up curve hit the file edge before flattening
+  bool down_boundary = 10;
+
+  string classification = 11; // structural | localized tweak | minor edit
 }

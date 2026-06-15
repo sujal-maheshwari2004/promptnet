@@ -19,7 +19,8 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	PromptService_GetPrompt_FullMethodName = "/promptnet.v1.PromptService/GetPrompt"
+	PromptService_GetPrompt_FullMethodName  = "/promptnet.v1.PromptService/GetPrompt"
+	PromptService_DiffPrompt_FullMethodName = "/promptnet.v1.PromptService/DiffPrompt"
 )
 
 // PromptServiceClient is the client API for PromptService service.
@@ -30,6 +31,10 @@ const (
 // writes happen via the `promptnet put` CLI until promptctl lands (Phase 3).
 type PromptServiceClient interface {
 	GetPrompt(ctx context.Context, in *GetPromptRequest, opts ...grpc.CallOption) (*GetPromptResponse, error)
+	// DiffPrompt runs the Semantic Propagation Diff between the stored prompt at
+	// `uri` (the original) and `new_template` (the edit), using the embedding
+	// model the server operator configured at startup.
+	DiffPrompt(ctx context.Context, in *DiffPromptRequest, opts ...grpc.CallOption) (*DiffPromptResponse, error)
 }
 
 type promptServiceClient struct {
@@ -50,6 +55,16 @@ func (c *promptServiceClient) GetPrompt(ctx context.Context, in *GetPromptReques
 	return out, nil
 }
 
+func (c *promptServiceClient) DiffPrompt(ctx context.Context, in *DiffPromptRequest, opts ...grpc.CallOption) (*DiffPromptResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DiffPromptResponse)
+	err := c.cc.Invoke(ctx, PromptService_DiffPrompt_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PromptServiceServer is the server API for PromptService service.
 // All implementations must embed UnimplementedPromptServiceServer
 // for forward compatibility.
@@ -58,6 +73,10 @@ func (c *promptServiceClient) GetPrompt(ctx context.Context, in *GetPromptReques
 // writes happen via the `promptnet put` CLI until promptctl lands (Phase 3).
 type PromptServiceServer interface {
 	GetPrompt(context.Context, *GetPromptRequest) (*GetPromptResponse, error)
+	// DiffPrompt runs the Semantic Propagation Diff between the stored prompt at
+	// `uri` (the original) and `new_template` (the edit), using the embedding
+	// model the server operator configured at startup.
+	DiffPrompt(context.Context, *DiffPromptRequest) (*DiffPromptResponse, error)
 	mustEmbedUnimplementedPromptServiceServer()
 }
 
@@ -70,6 +89,9 @@ type UnimplementedPromptServiceServer struct{}
 
 func (UnimplementedPromptServiceServer) GetPrompt(context.Context, *GetPromptRequest) (*GetPromptResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetPrompt not implemented")
+}
+func (UnimplementedPromptServiceServer) DiffPrompt(context.Context, *DiffPromptRequest) (*DiffPromptResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DiffPrompt not implemented")
 }
 func (UnimplementedPromptServiceServer) mustEmbedUnimplementedPromptServiceServer() {}
 func (UnimplementedPromptServiceServer) testEmbeddedByValue()                       {}
@@ -110,6 +132,24 @@ func _PromptService_GetPrompt_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PromptService_DiffPrompt_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DiffPromptRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PromptServiceServer).DiffPrompt(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PromptService_DiffPrompt_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PromptServiceServer).DiffPrompt(ctx, req.(*DiffPromptRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PromptService_ServiceDesc is the grpc.ServiceDesc for PromptService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -120,6 +160,10 @@ var PromptService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetPrompt",
 			Handler:    _PromptService_GetPrompt_Handler,
+		},
+		{
+			MethodName: "DiffPrompt",
+			Handler:    _PromptService_DiffPrompt_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

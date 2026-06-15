@@ -36,5 +36,15 @@ class PromptClient:
             self._cache[uri] = (resp, time.monotonic() + self._cache_ttl)
         return resp
 
+    def diff(self, uri, new_template):
+        """Semantic Propagation Diff of the stored prompt at `uri` vs an edited
+        template, computed server-side with the server's embedding model.
+        Returns the DiffPromptResponse (a list of Change with the three signals).
+        """
+        return self._stub.DiffPrompt(
+            prompt_pb2.DiffPromptRequest(uri=uri, new_template=new_template),
+            metadata=self._md,
+        )
+
     def close(self):
         self._chan.close()

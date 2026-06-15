@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
@@ -12,20 +13,22 @@ import (
 	"google.golang.org/grpc/status"
 
 	pb "promptnet/gen/promptnet/v1"
+	"promptnet/internal/semdiff"
 	"promptnet/internal/store"
 	"promptnet/internal/validate"
 )
 
 type Server struct {
 	pb.UnimplementedPromptServiceServer
-	Store *store.Store
-	Cache *ttlCache // L2 cache; nil disables it
+	Store    *store.Store
+	Cache    *ttlCache         // L2 cache; nil disables it
+	Embedder semdiff.Embedder  // configured at startup; used by DiffPrompt
 }
 
-// NewServer wires a server with an L2 cache of the given TTL. A non-positive ttl
-// leaves the cache nil (disabled).
-func NewServer(st *store.Store, ttl time.Duration) *Server {
-	s := &Server{Store: st}
+// NewServer wires a server with an L2 cache of the given TTL (non-positive
+// disables it) and the embedder used for semantic diffs.
+func NewServer(st *store.Store, ttl time.Duration, emb semdiff.Embedder) *Server {
+	s := &Server{Store: st, Embedder: emb}
 	if ttl > 0 {
 		s.Cache = newTTLCache(ttl)
 	}
@@ -57,6 +60,51 @@ func (s *Server) GetPrompt(ctx context.Context, req *pb.GetPromptRequest) (*pb.G
 	}
 	s.Cache.put(uri, resp)
 	return resp, nil
+}
+
+// DiffPrompt runs the Semantic Propagation Diff between the stored prompt (the
+// original) and the supplied edited template, using the server's embedder.
+func (s *Server) DiffPrompt(ctx context.Context, req *pb.DiffPromptRequest) (*pb.DiffPromptResponse, error) {
+	p, err := s.Store.Get(ctx, req.GetUri())
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, status.Errorf(codes.NotFound, "prompt %q not found", req.GetUri())
+	}
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "lookup failed: %v", err)
+	}
+	results, err := semdiff.Analyze(s.Embedder, splitLines(p.Template), splitLines(req.GetNewTemplate()))
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "diff failed: %v", err)
+	}
+	resp := &pb.DiffPromptResponse{Changes: make([]*pb.Change, len(results))}
+	for i, r := range results {
+		resp.Changes[i] = &pb.Change{
+			OldStart:       int32(r.Change.OldStart),
+			OldEnd:         int32(r.Change.OldEnd),
+			NewStart:       int32(r.Change.NewStart),
+			NewEnd:         int32(r.Change.NewEnd),
+			Kind:           semdiff.Kind(r.Change),
+			PointDelta:     r.Signal2,
+			Up:             toWindows(r.Up.Curve),
+			Down:           toWindows(r.Down.Curve),
+			UpBoundary:     r.Up.StoppedAtBoundary,
+			DownBoundary:   r.Down.StoppedAtBoundary,
+			Classification: r.Class,
+		}
+	}
+	return resp, nil
+}
+
+func toWindows(ws []semdiff.Window) []*pb.Window {
+	out := make([]*pb.Window, len(ws))
+	for i, w := range ws {
+		out[i] = &pb.Window{Radius: int32(w.Radius), Delta: w.Delta}
+	}
+	return out
+}
+
+func splitLines(s string) []string {
+	return strings.Split(strings.ReplaceAll(s, "\r\n", "\n"), "\n")
 }
 
 // AuthInterceptor enforces a static bearer token. Empty token disables auth.

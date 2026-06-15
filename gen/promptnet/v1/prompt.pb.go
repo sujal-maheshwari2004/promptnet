@@ -135,6 +135,283 @@ func (x *GetPromptResponse) GetVersionHash() string {
 	return ""
 }
 
+type DiffPromptRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Uri           string                 `protobuf:"bytes,1,opt,name=uri,proto3" json:"uri,omitempty"`                                    // stored prompt to diff against (the original)
+	NewTemplate   string                 `protobuf:"bytes,2,opt,name=new_template,json=newTemplate,proto3" json:"new_template,omitempty"` // the edited template
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DiffPromptRequest) Reset() {
+	*x = DiffPromptRequest{}
+	mi := &file_promptnet_v1_prompt_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DiffPromptRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DiffPromptRequest) ProtoMessage() {}
+
+func (x *DiffPromptRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_promptnet_v1_prompt_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DiffPromptRequest.ProtoReflect.Descriptor instead.
+func (*DiffPromptRequest) Descriptor() ([]byte, []int) {
+	return file_promptnet_v1_prompt_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *DiffPromptRequest) GetUri() string {
+	if x != nil {
+		return x.Uri
+	}
+	return ""
+}
+
+func (x *DiffPromptRequest) GetNewTemplate() string {
+	if x != nil {
+		return x.NewTemplate
+	}
+	return ""
+}
+
+type DiffPromptResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Changes       []*Change              `protobuf:"bytes,1,rep,name=changes,proto3" json:"changes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DiffPromptResponse) Reset() {
+	*x = DiffPromptResponse{}
+	mi := &file_promptnet_v1_prompt_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DiffPromptResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DiffPromptResponse) ProtoMessage() {}
+
+func (x *DiffPromptResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_promptnet_v1_prompt_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DiffPromptResponse.ProtoReflect.Descriptor instead.
+func (*DiffPromptResponse) Descriptor() ([]byte, []int) {
+	return file_promptnet_v1_prompt_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *DiffPromptResponse) GetChanges() []*Change {
+	if x != nil {
+		return x.Changes
+	}
+	return nil
+}
+
+// Window is one point on a propagation curve (Signal 3).
+type Window struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Radius        int32                  `protobuf:"varint,1,opt,name=radius,proto3" json:"radius,omitempty"`
+	Delta         float64                `protobuf:"fixed64,2,opt,name=delta,proto3" json:"delta,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Window) Reset() {
+	*x = Window{}
+	mi := &file_promptnet_v1_prompt_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Window) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Window) ProtoMessage() {}
+
+func (x *Window) ProtoReflect() protoreflect.Message {
+	mi := &file_promptnet_v1_prompt_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Window.ProtoReflect.Descriptor instead.
+func (*Window) Descriptor() ([]byte, []int) {
+	return file_promptnet_v1_prompt_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *Window) GetRadius() int32 {
+	if x != nil {
+		return x.Radius
+	}
+	return 0
+}
+
+func (x *Window) GetDelta() float64 {
+	if x != nil {
+		return x.Delta
+	}
+	return 0
+}
+
+// Change is one diff hunk with its three semantic signals.
+type Change struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Signal 1 — the changed region (half-open line ranges, 0-based).
+	OldStart int32  `protobuf:"varint,1,opt,name=old_start,json=oldStart,proto3" json:"old_start,omitempty"`
+	OldEnd   int32  `protobuf:"varint,2,opt,name=old_end,json=oldEnd,proto3" json:"old_end,omitempty"`
+	NewStart int32  `protobuf:"varint,3,opt,name=new_start,json=newStart,proto3" json:"new_start,omitempty"`
+	NewEnd   int32  `protobuf:"varint,4,opt,name=new_end,json=newEnd,proto3" json:"new_end,omitempty"`
+	Kind     string `protobuf:"bytes,5,opt,name=kind,proto3" json:"kind,omitempty"` // replace | insert | delete
+	// Signal 2 — semantic delta at the point of change.
+	PointDelta float64 `protobuf:"fixed64,6,opt,name=point_delta,json=pointDelta,proto3" json:"point_delta,omitempty"`
+	// Signal 3 — propagation profile, each direction independent.
+	Up             []*Window `protobuf:"bytes,7,rep,name=up,proto3" json:"up,omitempty"`
+	Down           []*Window `protobuf:"bytes,8,rep,name=down,proto3" json:"down,omitempty"`
+	UpBoundary     bool      `protobuf:"varint,9,opt,name=up_boundary,json=upBoundary,proto3" json:"up_boundary,omitempty"` // up curve hit the file edge before flattening
+	DownBoundary   bool      `protobuf:"varint,10,opt,name=down_boundary,json=downBoundary,proto3" json:"down_boundary,omitempty"`
+	Classification string    `protobuf:"bytes,11,opt,name=classification,proto3" json:"classification,omitempty"` // structural | localized tweak | minor edit
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *Change) Reset() {
+	*x = Change{}
+	mi := &file_promptnet_v1_prompt_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Change) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Change) ProtoMessage() {}
+
+func (x *Change) ProtoReflect() protoreflect.Message {
+	mi := &file_promptnet_v1_prompt_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Change.ProtoReflect.Descriptor instead.
+func (*Change) Descriptor() ([]byte, []int) {
+	return file_promptnet_v1_prompt_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *Change) GetOldStart() int32 {
+	if x != nil {
+		return x.OldStart
+	}
+	return 0
+}
+
+func (x *Change) GetOldEnd() int32 {
+	if x != nil {
+		return x.OldEnd
+	}
+	return 0
+}
+
+func (x *Change) GetNewStart() int32 {
+	if x != nil {
+		return x.NewStart
+	}
+	return 0
+}
+
+func (x *Change) GetNewEnd() int32 {
+	if x != nil {
+		return x.NewEnd
+	}
+	return 0
+}
+
+func (x *Change) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *Change) GetPointDelta() float64 {
+	if x != nil {
+		return x.PointDelta
+	}
+	return 0
+}
+
+func (x *Change) GetUp() []*Window {
+	if x != nil {
+		return x.Up
+	}
+	return nil
+}
+
+func (x *Change) GetDown() []*Window {
+	if x != nil {
+		return x.Down
+	}
+	return nil
+}
+
+func (x *Change) GetUpBoundary() bool {
+	if x != nil {
+		return x.UpBoundary
+	}
+	return false
+}
+
+func (x *Change) GetDownBoundary() bool {
+	if x != nil {
+		return x.DownBoundary
+	}
+	return false
+}
+
+func (x *Change) GetClassification() string {
+	if x != nil {
+		return x.Classification
+	}
+	return ""
+}
+
 var File_promptnet_v1_prompt_proto protoreflect.FileDescriptor
 
 const file_promptnet_v1_prompt_proto_rawDesc = "" +
@@ -146,9 +423,34 @@ const file_promptnet_v1_prompt_proto_rawDesc = "" +
 	"\x03uri\x18\x01 \x01(\tR\x03uri\x12\x1a\n" +
 	"\btemplate\x18\x02 \x01(\tR\btemplate\x12\x14\n" +
 	"\x05slots\x18\x03 \x03(\tR\x05slots\x12!\n" +
-	"\fversion_hash\x18\x04 \x01(\tR\vversionHash2]\n" +
+	"\fversion_hash\x18\x04 \x01(\tR\vversionHash\"H\n" +
+	"\x11DiffPromptRequest\x12\x10\n" +
+	"\x03uri\x18\x01 \x01(\tR\x03uri\x12!\n" +
+	"\fnew_template\x18\x02 \x01(\tR\vnewTemplate\"D\n" +
+	"\x12DiffPromptResponse\x12.\n" +
+	"\achanges\x18\x01 \x03(\v2\x14.promptnet.v1.ChangeR\achanges\"6\n" +
+	"\x06Window\x12\x16\n" +
+	"\x06radius\x18\x01 \x01(\x05R\x06radius\x12\x14\n" +
+	"\x05delta\x18\x02 \x01(\x01R\x05delta\"\xe7\x02\n" +
+	"\x06Change\x12\x1b\n" +
+	"\told_start\x18\x01 \x01(\x05R\boldStart\x12\x17\n" +
+	"\aold_end\x18\x02 \x01(\x05R\x06oldEnd\x12\x1b\n" +
+	"\tnew_start\x18\x03 \x01(\x05R\bnewStart\x12\x17\n" +
+	"\anew_end\x18\x04 \x01(\x05R\x06newEnd\x12\x12\n" +
+	"\x04kind\x18\x05 \x01(\tR\x04kind\x12\x1f\n" +
+	"\vpoint_delta\x18\x06 \x01(\x01R\n" +
+	"pointDelta\x12$\n" +
+	"\x02up\x18\a \x03(\v2\x14.promptnet.v1.WindowR\x02up\x12(\n" +
+	"\x04down\x18\b \x03(\v2\x14.promptnet.v1.WindowR\x04down\x12\x1f\n" +
+	"\vup_boundary\x18\t \x01(\bR\n" +
+	"upBoundary\x12#\n" +
+	"\rdown_boundary\x18\n" +
+	" \x01(\bR\fdownBoundary\x12&\n" +
+	"\x0eclassification\x18\v \x01(\tR\x0eclassification2\xae\x01\n" +
 	"\rPromptService\x12L\n" +
-	"\tGetPrompt\x12\x1e.promptnet.v1.GetPromptRequest\x1a\x1f.promptnet.v1.GetPromptResponseB(Z&promptnet/gen/promptnet/v1;promptnetv1b\x06proto3"
+	"\tGetPrompt\x12\x1e.promptnet.v1.GetPromptRequest\x1a\x1f.promptnet.v1.GetPromptResponse\x12O\n" +
+	"\n" +
+	"DiffPrompt\x12\x1f.promptnet.v1.DiffPromptRequest\x1a .promptnet.v1.DiffPromptResponseB(Z&promptnet/gen/promptnet/v1;promptnetv1b\x06proto3"
 
 var (
 	file_promptnet_v1_prompt_proto_rawDescOnce sync.Once
@@ -162,19 +464,28 @@ func file_promptnet_v1_prompt_proto_rawDescGZIP() []byte {
 	return file_promptnet_v1_prompt_proto_rawDescData
 }
 
-var file_promptnet_v1_prompt_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_promptnet_v1_prompt_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_promptnet_v1_prompt_proto_goTypes = []any{
-	(*GetPromptRequest)(nil),  // 0: promptnet.v1.GetPromptRequest
-	(*GetPromptResponse)(nil), // 1: promptnet.v1.GetPromptResponse
+	(*GetPromptRequest)(nil),   // 0: promptnet.v1.GetPromptRequest
+	(*GetPromptResponse)(nil),  // 1: promptnet.v1.GetPromptResponse
+	(*DiffPromptRequest)(nil),  // 2: promptnet.v1.DiffPromptRequest
+	(*DiffPromptResponse)(nil), // 3: promptnet.v1.DiffPromptResponse
+	(*Window)(nil),             // 4: promptnet.v1.Window
+	(*Change)(nil),             // 5: promptnet.v1.Change
 }
 var file_promptnet_v1_prompt_proto_depIdxs = []int32{
-	0, // 0: promptnet.v1.PromptService.GetPrompt:input_type -> promptnet.v1.GetPromptRequest
-	1, // 1: promptnet.v1.PromptService.GetPrompt:output_type -> promptnet.v1.GetPromptResponse
-	1, // [1:2] is the sub-list for method output_type
-	0, // [0:1] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	5, // 0: promptnet.v1.DiffPromptResponse.changes:type_name -> promptnet.v1.Change
+	4, // 1: promptnet.v1.Change.up:type_name -> promptnet.v1.Window
+	4, // 2: promptnet.v1.Change.down:type_name -> promptnet.v1.Window
+	0, // 3: promptnet.v1.PromptService.GetPrompt:input_type -> promptnet.v1.GetPromptRequest
+	2, // 4: promptnet.v1.PromptService.DiffPrompt:input_type -> promptnet.v1.DiffPromptRequest
+	1, // 5: promptnet.v1.PromptService.GetPrompt:output_type -> promptnet.v1.GetPromptResponse
+	3, // 6: promptnet.v1.PromptService.DiffPrompt:output_type -> promptnet.v1.DiffPromptResponse
+	5, // [5:7] is the sub-list for method output_type
+	3, // [3:5] is the sub-list for method input_type
+	3, // [3:3] is the sub-list for extension type_name
+	3, // [3:3] is the sub-list for extension extendee
+	0, // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_promptnet_v1_prompt_proto_init() }
@@ -188,7 +499,7 @@ func file_promptnet_v1_prompt_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_promptnet_v1_prompt_proto_rawDesc), len(file_promptnet_v1_prompt_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

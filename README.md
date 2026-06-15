@@ -214,6 +214,7 @@ Defined in [proto/promptnet/v1/prompt.proto](proto/promptnet/v1/prompt.proto):
 ```proto
 service PromptService {
   rpc GetPrompt(GetPromptRequest) returns (GetPromptResponse);
+  rpc DiffPrompt(DiffPromptRequest) returns (DiffPromptResponse);  // semantic propagation diff
 }
 
 message GetPromptRequest  { string uri = 1; }
@@ -223,10 +224,13 @@ message GetPromptResponse {
   repeated string slots = 3;
   string version_hash = 4;
 }
+
+message DiffPromptRequest  { string uri = 1; string new_template = 2; }
+// DiffPromptResponse returns the per-hunk three-signal analysis (see below).
 ```
 
-Phase 1 is read-only over the wire — writes happen via the `put` CLI. Errors are
-returned as standard gRPC status codes:
+Writes still happen via the `put` CLI; `GetPrompt` and `DiffPrompt` are the
+read/analyze surface. Errors are returned as standard gRPC status codes:
 
 | Code | When |
 | --- | --- |
@@ -314,6 +318,58 @@ deferred until it's actually needed.
 
 ---
 
+## Semantic Propagation Diff (Phase 3)
+
+A text diff tells you *that* line N changed. This tells you *how far the meaning
+shift ripples* through the surrounding prompt — the difference between a safe
+local tweak and a structural change that quietly rewires how nearby instructions
+relate.
+
+For each changed hunk it measures three signals
+([internal/semdiff/semdiff.go](internal/semdiff/semdiff.go)):
+
+1. **Signal 1** — the changed region (a line-level LCS diff hunk).
+2. **Signal 2** — semantic delta *at the point of change*: `1 - cosine(old, new)`.
+3. **Signal 3** — propagation profile: grow the window outward (±2, ±4, ±6 …),
+   **up and down independently**, recomputing the delta at each step until the
+   curve **flattens** (propagation stopped) or hits the **file boundary**.
+
+High Signal 2 + flat Signal 3 → **localized tweak**. Signal 3 still high at the
+boundary → **structural** (the dangerous one).
+
+The diff runs **server-side**, against the **stored** prompt (the original),
+using the embedding model the **operator configured at server startup** — so the
+analysis is consistent for everyone and prompts never leave your infrastructure.
+
+**The operator chooses the embedding model when starting the server.** With no
+URL the server falls back to an offline, zero-dependency *lexical* embedder
+(hashed bag-of-words) — enough to run and demo the mechanics, but it scores
+overlap, not meaning. Point `-embed-url` at any OpenAI-compatible endpoint
+(Ollama, text-embedding-inference, llama.cpp) for real semantics:
+
+```sh
+# real model (also reads PROMPTNET_EMBED_URL / _MODEL / _KEY)
+promptnet serve -embed-url http://localhost:11434/v1/embeddings -embed-model nomic-embed-text
+```
+
+Then diff an edited template against the stored original through the server:
+
+```sh
+promptnet diff -uri promptnet://acme/support/agent -file edited.txt -addr localhost:8443
+# change @ new lines 3-3 (old 3-3): replace
+#   Signal 2 (point delta): 0.470
+#   Signal 3 up:   ±2=0.095 (boundary)
+#   Signal 3 down: ±2=0.153 ±4=0.153 (flat)
+#   => localized tweak
+```
+
+Or from the Python adapter: `client.diff("promptnet://…", edited_template)`.
+
+> This is the engine behind `promptctl diff`; once Git-backed versioning lands it
+> will diff two stored refs instead of a ref against a candidate file.
+
+---
+
 ## Regenerating code from the proto
 
 Anything under `gen/` and `adapters/python/promptnet/v1/` is generated. After
@@ -335,7 +391,7 @@ any plugins locally. Don't hand-edit generated files — they'll be overwritten.
 | --- | --- | --- |
 | **v0.1** | gRPC server, Python adapter, validation | done |
 | **v0.2** | L1/L2 caching (TTL), keyed on `version_hash` | **this repo** |
-| v0.3 | `promptctl` CLI: push/pull/commit/diff/promote, Git-backed versioning | planned |
+| v0.3 | `promptctl` CLI: push/pull/commit/diff/promote, Git-backed versioning | in progress — semantic diff landed |
 | v0.4 | Pub/sub distribution over NATS, TTL sync, subscriber model | planned |
 
 Also deferred: a PostgreSQL backend for multi-node enterprise deployments

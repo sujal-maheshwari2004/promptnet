@@ -21,6 +21,11 @@ class PromptServiceStub:
                 request_serializer=promptnet_dot_v1_dot_prompt__pb2.GetPromptRequest.SerializeToString,
                 response_deserializer=promptnet_dot_v1_dot_prompt__pb2.GetPromptResponse.FromString,
                 _registered_method=True)
+        self.DiffPrompt = channel.unary_unary(
+                '/promptnet.v1.PromptService/DiffPrompt',
+                request_serializer=promptnet_dot_v1_dot_prompt__pb2.DiffPromptRequest.SerializeToString,
+                response_deserializer=promptnet_dot_v1_dot_prompt__pb2.DiffPromptResponse.FromString,
+                _registered_method=True)
 
 
 class PromptServiceServicer:
@@ -34,6 +39,15 @@ class PromptServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def DiffPrompt(self, request, context):
+        """DiffPrompt runs the Semantic Propagation Diff between the stored prompt at
+        `uri` (the original) and `new_template` (the edit), using the embedding
+        model the server operator configured at startup.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_PromptServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -41,6 +55,11 @@ def add_PromptServiceServicer_to_server(servicer, server):
                     servicer.GetPrompt,
                     request_deserializer=promptnet_dot_v1_dot_prompt__pb2.GetPromptRequest.FromString,
                     response_serializer=promptnet_dot_v1_dot_prompt__pb2.GetPromptResponse.SerializeToString,
+            ),
+            'DiffPrompt': grpc.unary_unary_rpc_method_handler(
+                    servicer.DiffPrompt,
+                    request_deserializer=promptnet_dot_v1_dot_prompt__pb2.DiffPromptRequest.FromString,
+                    response_serializer=promptnet_dot_v1_dot_prompt__pb2.DiffPromptResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -72,6 +91,33 @@ class PromptService:
             '/promptnet.v1.PromptService/GetPrompt',
             promptnet_dot_v1_dot_prompt__pb2.GetPromptRequest.SerializeToString,
             promptnet_dot_v1_dot_prompt__pb2.GetPromptResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DiffPrompt(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/promptnet.v1.PromptService/DiffPrompt',
+            promptnet_dot_v1_dot_prompt__pb2.DiffPromptRequest.SerializeToString,
+            promptnet_dot_v1_dot_prompt__pb2.DiffPromptResponse.FromString,
             options,
             channel_credentials,
             insecure,
