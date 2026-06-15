@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -18,26 +19,44 @@ import (
 type Server struct {
 	pb.UnimplementedPromptServiceServer
 	Store *store.Store
+	Cache *ttlCache // L2 cache; nil disables it
+}
+
+// NewServer wires a server with an L2 cache of the given TTL. A non-positive ttl
+// leaves the cache nil (disabled).
+func NewServer(st *store.Store, ttl time.Duration) *Server {
+	s := &Server{Store: st}
+	if ttl > 0 {
+		s.Cache = newTTLCache(ttl)
+	}
+	return s
 }
 
 func (s *Server) GetPrompt(ctx context.Context, req *pb.GetPromptRequest) (*pb.GetPromptResponse, error) {
-	p, err := s.Store.Get(ctx, req.GetUri())
+	uri := req.GetUri()
+	if resp, ok := s.Cache.get(uri); ok {
+		return resp, nil
+	}
+	p, err := s.Store.Get(ctx, uri)
 	if errors.Is(err, store.ErrNotFound) {
-		return nil, status.Errorf(codes.NotFound, "prompt %q not found", req.GetUri())
+		return nil, status.Errorf(codes.NotFound, "prompt %q not found", uri)
 	}
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "lookup failed: %v", err)
 	}
-	// Serve-time validation: never hand a malformed prompt to a production agent.
+	// Serve-time validation: never hand a malformed prompt to a production agent,
+	// and never cache one (validation before caching).
 	if err := validate.Prompt(p.URI, p.Template, p.Slots); err != nil {
 		return nil, status.Errorf(codes.DataLoss, "stored prompt invalid: %v", err)
 	}
-	return &pb.GetPromptResponse{
+	resp := &pb.GetPromptResponse{
 		Uri:         p.URI,
 		Template:    p.Template,
 		Slots:       p.Slots,
 		VersionHash: p.VersionHash,
-	}, nil
+	}
+	s.Cache.put(uri, resp)
+	return resp, nil
 }
 
 // AuthInterceptor enforces a static bearer token. Empty token disables auth.

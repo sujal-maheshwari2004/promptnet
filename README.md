@@ -1,14 +1,14 @@
-# PromptNet — Phase 1 (Transport & Serving)
+# PromptNet — Phases 1–2 (Transport, Serving & Caching)
 
 PromptNet is a self-hostable, language-agnostic system for serving prompts to AI
 agents over a network — the way a Git server serves repositories. You run the
 server, your prompts live in your infrastructure, and your agents fetch them by
 URI over gRPC.
 
-This repository is **Phase 1**: the foundation. It is a single Go binary that
-**stores**, **validates**, and **serves** prompts, plus a **Python client** for
-agents to fetch them. Caching, a full CLI, and pub/sub distribution come in
-later phases (see [Roadmap](#roadmap)).
+This repository covers **Phases 1–2**: a single Go binary that **stores**,
+**validates**, **serves**, and **caches** prompts, plus a **Python client** for
+agents to fetch them. A full CLI and pub/sub distribution come in later phases
+(see [Roadmap](#roadmap)).
 
 ---
 
@@ -288,6 +288,32 @@ reflects current content. The `-db` flag chooses the file (default
 
 ---
 
+## Caching (Phase 2)
+
+Two layers, both opt-in and both keyed by URI with TTL-bounded freshness. Only
+**validated** prompts are ever cached, so a malformed prompt can never be served
+from cache.
+
+- **L2 (server-side)** — an in-process cache in front of SQLite. Enabled by
+  default; tune with `serve -cache-ttl 30s` (`0` disables). A `put` that changes
+  a prompt is reflected within the TTL.
+- **L1 (client-side)** — an in-process cache in the Python client. Off by
+  default; enable with `PromptClient(..., cache_ttl=30)` (seconds).
+
+```python
+client = PromptClient(host="localhost:8443", token="secret", cache_ttl=30)
+client.get("promptnet://acme/onboarding/welcome")  # first call hits the server
+client.get("promptnet://acme/onboarding/welcome")  # served from L1 for 30s
+```
+
+Why TTL and not Redis: a changed prompt produces a new `version_hash`, so content
+is always self-identifying; TTL just bounds how long a URI→version mapping can
+lag. The server cache is in-process to keep the **single binary, zero external
+dependencies** promise. Redis + LRU is the swap when serving goes multi-node —
+deferred until it's actually needed.
+
+---
+
 ## Regenerating code from the proto
 
 Anything under `gen/` and `adapters/python/promptnet/v1/` is generated. After
@@ -307,8 +333,8 @@ any plugins locally. Don't hand-edit generated files — they'll be overwritten.
 
 | Version | Ships | Status |
 | --- | --- | --- |
-| **v0.1** | gRPC server, Python adapter, validation | **this repo** |
-| v0.2 | L1/L2 caching (local + Redis), keyed on `version_hash` | planned |
+| **v0.1** | gRPC server, Python adapter, validation | done |
+| **v0.2** | L1/L2 caching (TTL), keyed on `version_hash` | **this repo** |
 | v0.3 | `promptctl` CLI: push/pull/commit/diff/promote, Git-backed versioning | planned |
 | v0.4 | Pub/sub distribution over NATS, TTL sync, subscriber model | planned |
 

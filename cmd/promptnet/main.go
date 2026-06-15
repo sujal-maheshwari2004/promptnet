@@ -12,6 +12,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -47,6 +48,7 @@ func serve(args []string) {
 	dbPath := fs.String("db", "promptnet.db", "sqlite path")
 	cert := fs.String("tls-cert", "", "TLS cert file (optional)")
 	key := fs.String("tls-key", "", "TLS key file (optional)")
+	cacheTTL := fs.Duration("cache-ttl", 30*time.Second, "L2 server cache TTL; 0 disables")
 	fs.Parse(args)
 	token := os.Getenv("PROMPTNET_TOKEN")
 
@@ -65,13 +67,13 @@ func serve(args []string) {
 		opts = append(opts, grpc.Creds(creds))
 	}
 	gs := grpc.NewServer(opts...)
-	pb.RegisterPromptServiceServer(gs, &server.Server{Store: st})
+	pb.RegisterPromptServiceServer(gs, server.NewServer(st, *cacheTTL))
 
 	lis, err := net.Listen("tcp", *addr)
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("promptnet serving on %s (tls=%v auth=%v)", *addr, *cert != "", token != "")
+	log.Printf("promptnet serving on %s (tls=%v auth=%v cache-ttl=%v)", *addr, *cert != "", token != "", *cacheTTL)
 	if err := gs.Serve(lis); err != nil {
 		log.Fatal(err)
 	}
