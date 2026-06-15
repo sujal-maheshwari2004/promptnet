@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
@@ -10,7 +11,7 @@ import (
 
 // call runs the interceptor and returns whether the handler ran and the scope
 // the interceptor attached (empty if it didn't run or scope was admin/"").
-func call(tokens map[string]string, header string) (passed bool, scope string) {
+func call(tokens map[string]Token, header string) (passed bool, scope string) {
 	ctx := context.Background()
 	if header != "" {
 		ctx = metadata.NewIncomingContext(ctx, metadata.Pairs("authorization", header))
@@ -25,7 +26,7 @@ func call(tokens map[string]string, header string) (passed bool, scope string) {
 }
 
 func TestAuthInterceptor(t *testing.T) {
-	two := map[string]string{"alice": "", "bob": "acme"}
+	two := map[string]Token{"alice": {}, "bob": {Org: "acme"}}
 	if ok, _ := call(two, "Bearer alice"); !ok {
 		t.Error("alice's token should authenticate")
 	}
@@ -38,8 +39,18 @@ func TestAuthInterceptor(t *testing.T) {
 	if ok, _ := call(two, ""); ok {
 		t.Error("missing token must be rejected")
 	}
-	if ok, _ := call(map[string]string{}, ""); !ok {
+	if ok, _ := call(map[string]Token{}, ""); !ok {
 		t.Error("empty token set disables auth")
+	}
+
+	// Expiry: a past expiry is rejected, a future one passes.
+	expired := map[string]Token{"old": {Expires: time.Now().Add(-time.Hour)}}
+	if ok, _ := call(expired, "Bearer old"); ok {
+		t.Error("expired token must be rejected")
+	}
+	valid := map[string]Token{"new": {Expires: time.Now().Add(time.Hour)}}
+	if ok, _ := call(valid, "Bearer new"); !ok {
+		t.Error("unexpired token must authenticate")
 	}
 }
 

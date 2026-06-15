@@ -11,11 +11,24 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // postgres
 	_ "modernc.org/sqlite"             // sqlite
 )
+
+// migrations are schema steps applied in order, once each, tracked in
+// schema_version. Append new steps to the end — never edit or reorder an
+// existing one, or databases will diverge. Portable across SQLite and Postgres.
+var migrations = []string{
+	`CREATE TABLE IF NOT EXISTS prompts(
+		uri          TEXT PRIMARY KEY,
+		template     TEXT NOT NULL,
+		slots        TEXT NOT NULL,
+		version_hash TEXT NOT NULL
+	)`,
+}
 
 type Prompt struct {
 	URI         string
@@ -28,11 +41,13 @@ var ErrNotFound = errors.New("prompt not found")
 
 type Store struct {
 	db       *sql.DB
+	version  int
 	putQuery string
 	getQuery string
 }
 
-// Open connects to SQLite (a file path) or PostgreSQL (a postgres:// DSN).
+// Open connects to SQLite (a file path) or PostgreSQL (a postgres:// DSN) and
+// applies any pending schema migrations.
 func Open(dsn string) (*Store, error) {
 	driver := "sqlite"
 	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
@@ -42,16 +57,12 @@ func Open(dsn string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS prompts(
-		uri          TEXT PRIMARY KEY,
-		template     TEXT NOT NULL,
-		slots        TEXT NOT NULL,
-		version_hash TEXT NOT NULL
-	)`); err != nil {
+	version, err := migrate(db, driver)
+	if err != nil {
 		db.Close()
 		return nil, err
 	}
-	s := &Store{db: db}
+	s := &Store{db: db, version: version}
 	// ON CONFLICT upsert is valid in both engines; only the placeholders differ.
 	if driver == "pgx" {
 		s.putQuery = `INSERT INTO prompts(uri, template, slots, version_hash) VALUES($1,$2,$3,$4)
@@ -66,6 +77,66 @@ func Open(dsn string) (*Store, error) {
 }
 
 func (s *Store) Close() error { return s.db.Close() }
+
+// SchemaVersion is the number of migrations applied to this database.
+func (s *Store) SchemaVersion() int { return s.version }
+
+// migrate applies every migration whose index is past the recorded version,
+// each in its own transaction so a failure leaves the schema consistent.
+func migrate(db *sql.DB, driver string) (int, error) {
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_version(version INTEGER NOT NULL)`); err != nil {
+		return 0, err
+	}
+	var cur int
+	if err := db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_version`).Scan(&cur); err != nil {
+		return 0, err
+	}
+	ph := "?"
+	if driver == "pgx" {
+		ph = "$1"
+	}
+	for i := cur; i < len(migrations); i++ {
+		tx, err := db.Begin()
+		if err != nil {
+			return cur, err
+		}
+		if _, err := tx.Exec(migrations[i]); err != nil {
+			tx.Rollback()
+			return cur, fmt.Errorf("migration %d: %w", i+1, err)
+		}
+		if _, err := tx.Exec(`INSERT INTO schema_version(version) VALUES(`+ph+`)`, i+1); err != nil {
+			tx.Rollback()
+			return cur, err
+		}
+		if err := tx.Commit(); err != nil {
+			return cur, err
+		}
+		cur = i + 1
+	}
+	return cur, nil
+}
+
+// Dump returns every stored prompt, ordered by URI — the backup snapshot.
+func (s *Store) Dump(ctx context.Context) ([]Prompt, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT uri, template, slots, version_hash FROM prompts ORDER BY uri`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Prompt
+	for rows.Next() {
+		var p Prompt
+		var slots string
+		if err := rows.Scan(&p.URI, &p.Template, &slots, &p.VersionHash); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(slots), &p.Slots); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
 
 // Hash is the version identity: same content -> same hash -> same cache key.
 func Hash(template string, slots []string) string {

@@ -8,6 +8,11 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -47,13 +52,21 @@ func main() {
 		diff(os.Args[2:])
 	case "publish":
 		publish(os.Args[2:])
+	case "backup":
+		backup(os.Args[2:])
+	case "restore":
+		restore(os.Args[2:])
+	case "migrate":
+		migrateCmd(os.Args[2:])
+	case "gen-token":
+		genToken()
 	default:
 		usage()
 	}
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: promptnet serve|put|diff|publish [flags]")
+	fmt.Fprintln(os.Stderr, "usage: promptnet serve|put|diff|publish|backup|restore|migrate|gen-token [flags]")
 	os.Exit(2)
 }
 
@@ -63,6 +76,7 @@ func serve(args []string) {
 	dbPath := fs.String("db", "promptnet.db", "sqlite file path, or a postgres:// DSN for enterprise")
 	cert := fs.String("tls-cert", "", "TLS cert file (optional)")
 	key := fs.String("tls-key", "", "TLS key file (optional)")
+	clientCA := fs.String("client-ca", "", "CA cert to verify client certs; enables mTLS (requires -tls-cert/-tls-key)")
 	cacheTTL := fs.Duration("cache-ttl", 30*time.Second, "L2 server cache TTL; 0 disables")
 	redisURL := fs.String("redis-url", os.Getenv("PROMPTNET_REDIS_URL"), "redis:// URL for a shared L2 cache (default: in-process cache)")
 	embedURL := fs.String("embed-url", os.Getenv("PROMPTNET_EMBED_URL"), "OpenAI-compatible /v1/embeddings URL for semantic diff (default: offline lexical embedder)")
@@ -115,11 +129,13 @@ func serve(args []string) {
 		server.RateLimitInterceptor(*rateLimit, *rateBurst),
 	)}
 	if *cert != "" && *key != "" {
-		creds, err := credentials.NewServerTLSFromFile(*cert, *key)
+		creds, err := serverCreds(*cert, *key, *clientCA)
 		if err != nil {
 			log.Fatal(err)
 		}
 		opts = append(opts, grpc.Creds(creds))
+	} else if *clientCA != "" {
+		log.Fatal("-client-ca requires -tls-cert and -tls-key")
 	}
 	gs := grpc.NewServer(opts...)
 	pb.RegisterPromptServiceServer(gs, server.NewServer(st, cache, emb, notifier))
@@ -128,11 +144,43 @@ func serve(args []string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("promptnet serving on %s (tls=%v auth=%d-token cache=%s embed=%s nats=%s metrics=%s ratelimit=%g/s)",
-		*addr, *cert != "", len(tokens), cacheName(*redisURL, *cacheTTL), embedName(*embedURL, *embedModel), *natsAddr, *metricsAddr, *rateLimit)
+	log.Printf("promptnet serving on %s (tls=%v mtls=%v auth=%d-token cache=%s embed=%s nats=%s metrics=%s ratelimit=%g/s)",
+		*addr, *cert != "", *clientCA != "", len(tokens), cacheName(*redisURL, *cacheTTL), embedName(*embedURL, *embedModel), *natsAddr, *metricsAddr, *rateLimit)
 	if err := gs.Serve(lis); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// serverCreds builds the server's TLS credentials. With clientCA set it
+// requires and verifies client certs (mutual TLS).
+func serverCreds(certFile, keyFile, clientCA string) (credentials.TransportCredentials, error) {
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, err
+	}
+	cfg := &tls.Config{Certificates: []tls.Certificate{cert}}
+	if clientCA != "" {
+		pool, err := certPool(clientCA)
+		if err != nil {
+			return nil, err
+		}
+		cfg.ClientCAs = pool
+		cfg.ClientAuth = tls.RequireAndVerifyClientCert
+	}
+	return credentials.NewTLS(cfg), nil
+}
+
+// certPool loads a PEM file into a fresh cert pool.
+func certPool(pemFile string) (*x509.CertPool, error) {
+	pem, err := os.ReadFile(pemFile)
+	if err != nil {
+		return nil, err
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("no certificates found in %s", pemFile)
+	}
+	return pool, nil
 }
 
 // buildCache picks the L2 cache: Redis when a URL is given, else the in-process
@@ -159,14 +207,17 @@ func cacheName(redisURL string, ttl time.Duration) string {
 	}
 }
 
-// loadTokens reads bearer tokens and their org scope. PROMPTNET_TOKEN is an
-// admin token (all orgs). The file has `token [org]` lines — an org scopes the
-// token to promptnet://org/…; blank lines and # comments are ignored. Empty
-// result = auth disabled.
-func loadTokens(file string) map[string]string {
-	tokens := map[string]string{}
+// loadTokens reads bearer tokens, their org scope, and an optional expiry.
+// PROMPTNET_TOKEN is an admin token (all orgs, never expires). The file has
+// `token [org] [expiry]` lines — org scopes the token to promptnet://org/…
+// (blank = admin); expiry is a date (2006-01-02) or RFC3339 timestamp, after
+// which the token is rejected. Blank lines and # comments are ignored. An empty
+// result = auth disabled. To rotate: add the new token, give the old one a
+// near-future expiry, drop it once it lapses.
+func loadTokens(file string) map[string]server.Token {
+	tokens := map[string]server.Token{}
 	if t := os.Getenv("PROMPTNET_TOKEN"); t != "" {
-		tokens[t] = "" // admin
+		tokens[t] = server.Token{} // admin, never expires
 	}
 	if file != "" {
 		b, err := os.ReadFile(file)
@@ -179,14 +230,29 @@ func loadTokens(file string) map[string]string {
 				continue
 			}
 			fields := strings.Fields(line)
-			org := ""
+			tok := server.Token{}
 			if len(fields) > 1 {
-				org = fields[1]
+				tok.Org = fields[1]
 			}
-			tokens[fields[0]] = org
+			if len(fields) > 2 {
+				tok.Expires = parseExpiry(fields[2])
+			}
+			tokens[fields[0]] = tok
 		}
 	}
 	return tokens
+}
+
+// parseExpiry accepts a bare date (2006-01-02) or an RFC3339 timestamp.
+func parseExpiry(s string) time.Time {
+	if t, err := time.Parse("2006-01-02", s); err == nil {
+		return t
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		log.Fatalf("bad token expiry %q: want 2006-01-02 or RFC3339", s)
+	}
+	return t
 }
 
 // splitHostPort parses host:port; an empty host means all interfaces.
@@ -291,13 +357,15 @@ func diff(args []string) {
 	file := fs.String("file", "-", "edited template file (- for stdin)")
 	useTLS := fs.Bool("tls", false, "use TLS")
 	caCert := fs.String("ca-cert", "", "CA cert for TLS (optional)")
+	clientCert := fs.String("cert", "", "client cert for mTLS (optional)")
+	clientKey := fs.String("key", "", "client key for mTLS (optional)")
 	fs.Parse(args)
 	if *uri == "" {
 		log.Fatal("usage: promptnet diff -uri promptnet://... -file edited.txt [-addr localhost:8443]")
 	}
 	edited := readTemplate(*file)
 
-	conn := dial(*addr, *useTLS, *caCert)
+	conn := dial(*addr, *useTLS, *caCert, *clientCert, *clientKey)
 	defer conn.Close()
 	resp, err := pb.NewPromptServiceClient(conn).DiffPrompt(authCtx(),
 		&pb.DiffPromptRequest{Uri: *uri, NewTemplate: edited})
@@ -315,6 +383,8 @@ func publish(args []string) {
 	file := fs.String("file", "-", "template file (- for stdin)")
 	useTLS := fs.Bool("tls", false, "use TLS")
 	caCert := fs.String("ca-cert", "", "CA cert for TLS (optional)")
+	clientCert := fs.String("cert", "", "client cert for mTLS (optional)")
+	clientKey := fs.String("key", "", "client key for mTLS (optional)")
 	var slots multiFlag
 	fs.Var(&slots, "slot", "declared slot name (repeatable)")
 	fs.Parse(args)
@@ -323,7 +393,7 @@ func publish(args []string) {
 	}
 	template := readTemplate(*file)
 
-	conn := dial(*addr, *useTLS, *caCert)
+	conn := dial(*addr, *useTLS, *caCert, *clientCert, *clientKey)
 	defer conn.Close()
 	resp, err := pb.NewPromptServiceClient(conn).PublishPrompt(authCtx(),
 		&pb.PublishPromptRequest{Uri: *uri, Template: template, Slots: slots})
@@ -333,14 +403,126 @@ func publish(args []string) {
 	fmt.Printf("published %s (%s) — subscribers notified\n", *uri, resp.GetVersionHash()[:12])
 }
 
-// dial opens a gRPC client connection, optionally over TLS.
-func dial(addr string, useTLS bool, caCert string) *grpc.ClientConn {
-	creds := insecure.NewCredentials()
-	if useTLS {
-		var err error
-		if creds, err = credentials.NewClientTLSFromFile(caCert, ""); err != nil {
+// backup writes every stored prompt to -out as JSON lines (one prompt per
+// line) — a portable snapshot that restores into either backend.
+func backup(args []string) {
+	fs := flag.NewFlagSet("backup", flag.ExitOnError)
+	dbPath := fs.String("db", "promptnet.db", "sqlite file path, or a postgres:// DSN")
+	out := fs.String("out", "-", "output file (- for stdout)")
+	fs.Parse(args)
+
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer st.Close()
+	prompts, err := st.Dump(context.Background())
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	w := os.Stdout
+	if *out != "-" {
+		f, err := os.Create(*out)
+		if err != nil {
 			log.Fatal(err)
 		}
+		defer f.Close()
+		w = f
+	}
+	enc := json.NewEncoder(w)
+	for _, p := range prompts {
+		if err := enc.Encode(p); err != nil {
+			log.Fatal(err)
+		}
+	}
+	fmt.Fprintf(os.Stderr, "backed up %d prompts\n", len(prompts))
+}
+
+// restore reads JSON-lines prompts from -in and upserts each into the store.
+// Put is an idempotent upsert, so restoring is safe to repeat.
+func restore(args []string) {
+	fs := flag.NewFlagSet("restore", flag.ExitOnError)
+	dbPath := fs.String("db", "promptnet.db", "sqlite file path, or a postgres:// DSN")
+	in := fs.String("in", "-", "input file (- for stdin)")
+	fs.Parse(args)
+
+	r := io.Reader(os.Stdin)
+	if *in != "-" {
+		f, err := os.Open(*in)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer f.Close()
+		r = f
+	}
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer st.Close()
+
+	dec := json.NewDecoder(r)
+	n := 0
+	for {
+		var p store.Prompt
+		if err := dec.Decode(&p); err == io.EOF {
+			break
+		} else if err != nil {
+			log.Fatal(err)
+		}
+		if err := st.Put(context.Background(), p); err != nil {
+			log.Fatal(err)
+		}
+		n++
+	}
+	fmt.Printf("restored %d prompts\n", n)
+}
+
+// migrateCmd applies pending schema migrations (Open runs them) and reports the
+// resulting schema version.
+func migrateCmd(args []string) {
+	fs := flag.NewFlagSet("migrate", flag.ExitOnError)
+	dbPath := fs.String("db", "promptnet.db", "sqlite file path, or a postgres:// DSN")
+	fs.Parse(args)
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer st.Close()
+	fmt.Printf("schema up to date (version %d)\n", st.SchemaVersion())
+}
+
+// genToken prints a fresh random bearer token for the tokens file.
+func genToken() {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(hex.EncodeToString(b))
+}
+
+// dial opens a gRPC client connection, optionally over TLS. With clientCert/Key
+// set it presents a client certificate for mutual TLS.
+func dial(addr string, useTLS bool, caCert, clientCert, clientKey string) *grpc.ClientConn {
+	creds := insecure.NewCredentials()
+	if useTLS {
+		cfg := &tls.Config{}
+		if caCert != "" {
+			pool, err := certPool(caCert)
+			if err != nil {
+				log.Fatal(err)
+			}
+			cfg.RootCAs = pool
+		}
+		if clientCert != "" {
+			c, err := tls.LoadX509KeyPair(clientCert, clientKey)
+			if err != nil {
+				log.Fatal(err)
+			}
+			cfg.Certificates = []tls.Certificate{c}
+		}
+		creds = credentials.NewTLS(cfg)
 	}
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(creds))
 	if err != nil {

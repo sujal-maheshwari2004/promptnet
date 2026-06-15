@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"strings"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -152,17 +153,26 @@ func splitLines(s string) []string {
 
 type scopeKey struct{}
 
-// AuthInterceptor authenticates bearer tokens and attaches each token's scope
-// (the org it is allowed to act on, "" = all orgs) to the context. An empty
-// token map disables auth, leaving every request unscoped (full access).
-func AuthInterceptor(tokens map[string]string) grpc.UnaryServerInterceptor {
+// Token is a bearer credential: the org it is scoped to ("" = admin, all orgs)
+// and an optional expiry (zero = never expires). Rotation is just overlapping
+// tokens — issue the new one, let the old one's Expires lapse, then drop it.
+type Token struct {
+	Org     string
+	Expires time.Time
+}
+
+// AuthInterceptor authenticates bearer tokens, rejects expired ones, and
+// attaches each token's org scope to the context. An empty token map disables
+// auth, leaving every request unscoped (full access).
+func AuthInterceptor(tokens map[string]Token) grpc.UnaryServerInterceptor {
 	type entry struct {
-		want []byte
-		org  string
+		want    []byte
+		org     string
+		expires time.Time
 	}
 	wants := make([]entry, 0, len(tokens))
-	for t, org := range tokens {
-		wants = append(wants, entry{want: []byte("Bearer " + t), org: org})
+	for t, tok := range tokens {
+		wants = append(wants, entry{want: []byte("Bearer " + t), org: tok.Org, expires: tok.Expires})
 	}
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		if len(wants) == 0 {
@@ -175,13 +185,17 @@ func AuthInterceptor(tokens map[string]string) grpc.UnaryServerInterceptor {
 			}
 		}
 		ok, org := false, ""
+		var expires time.Time
 		for _, w := range wants { // no early break: keep timing independent of which key matches
 			if subtle.ConstantTimeCompare(got, w.want) == 1 {
-				ok, org = true, w.org
+				ok, org, expires = true, w.org, w.expires
 			}
 		}
 		if !ok {
 			return nil, status.Error(codes.Unauthenticated, "invalid or missing token")
+		}
+		if !expires.IsZero() && time.Now().After(expires) {
+			return nil, status.Error(codes.Unauthenticated, "token expired")
 		}
 		return handler(context.WithValue(ctx, scopeKey{}, org), req)
 	}
