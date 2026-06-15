@@ -141,21 +141,33 @@ func splitLines(s string) []string {
 	return strings.Split(strings.ReplaceAll(s, "\r\n", "\n"), "\n")
 }
 
-// AuthInterceptor enforces a static bearer token. Empty token disables auth.
-// ponytail: single static token; swap for per-org API keys when multi-tenant.
-func AuthInterceptor(token string) grpc.UnaryServerInterceptor {
-	want := []byte("Bearer " + token)
+// AuthInterceptor enforces bearer tokens. An empty set disables auth; any token
+// in the set authenticates, so you can issue and revoke keys per client without
+// rotating everyone.
+// ponytail: authentication only — per-org *authorization* (scoping which prompts
+// an org may read/write) isn't modeled yet; add it here when multi-tenant.
+func AuthInterceptor(tokens map[string]bool) grpc.UnaryServerInterceptor {
+	wants := make([][]byte, 0, len(tokens))
+	for t := range tokens {
+		wants = append(wants, []byte("Bearer "+t))
+	}
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		if token == "" {
+		if len(wants) == 0 {
 			return handler(ctx, req)
 		}
-		var got string
+		var got []byte
 		if md, ok := metadata.FromIncomingContext(ctx); ok {
 			if v := md.Get("authorization"); len(v) > 0 {
-				got = v[0]
+				got = []byte(v[0])
 			}
 		}
-		if subtle.ConstantTimeCompare([]byte(got), want) != 1 {
+		ok := false
+		for _, w := range wants { // no early break: keep timing independent of which key matches
+			if subtle.ConstantTimeCompare(got, w) == 1 {
+				ok = true
+			}
+		}
+		if !ok {
 			return nil, status.Error(codes.Unauthenticated, "invalid or missing token")
 		}
 		return handler(ctx, req)

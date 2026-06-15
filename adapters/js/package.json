@@ -1,0 +1,13 @@
+{
+  "name": "promptnet-client",
+  "version": "0.1.0",
+  "description": "PromptNet JavaScript adapter",
+  "main": "client.js",
+  "dependencies": {
+    "@grpc/grpc-js": "^1.10.0",
+    "@grpc/proto-loader": "^0.7.0"
+  },
+  "optionalDependencies": {
+    "nats": "^2.0.0"
+  }
+}

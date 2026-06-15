@@ -58,15 +58,16 @@ func usage() {
 func serve(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", ":8443", "listen address")
-	dbPath := fs.String("db", "promptnet.db", "sqlite path")
+	dbPath := fs.String("db", "promptnet.db", "sqlite file path, or a postgres:// DSN for enterprise")
 	cert := fs.String("tls-cert", "", "TLS cert file (optional)")
 	key := fs.String("tls-key", "", "TLS key file (optional)")
 	cacheTTL := fs.Duration("cache-ttl", 30*time.Second, "L2 server cache TTL; 0 disables")
 	embedURL := fs.String("embed-url", os.Getenv("PROMPTNET_EMBED_URL"), "OpenAI-compatible /v1/embeddings URL for semantic diff (default: offline lexical embedder)")
 	embedModel := fs.String("embed-model", os.Getenv("PROMPTNET_EMBED_MODEL"), "embedding model name")
 	natsAddr := fs.String("nats-addr", "127.0.0.1:4222", "embedded NATS listen address for pub/sub; empty disables it")
+	tokensFile := fs.String("tokens-file", "", "file of bearer tokens, one per line (# comments ok); adds to PROMPTNET_TOKEN")
 	fs.Parse(args)
-	token := os.Getenv("PROMPTNET_TOKEN")
+	tokens := loadTokens(*tokensFile)
 	embedKey := os.Getenv("PROMPTNET_EMBED_KEY")
 
 	st, err := store.Open(*dbPath)
@@ -88,7 +89,7 @@ func serve(args []string) {
 		notifier = bus
 	}
 
-	opts := []grpc.ServerOption{grpc.UnaryInterceptor(server.AuthInterceptor(token))}
+	opts := []grpc.ServerOption{grpc.UnaryInterceptor(server.AuthInterceptor(tokens))}
 	if *cert != "" && *key != "" {
 		creds, err := credentials.NewServerTLSFromFile(*cert, *key)
 		if err != nil {
@@ -103,11 +104,32 @@ func serve(args []string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("promptnet serving on %s (tls=%v auth=%v cache-ttl=%v embed=%s nats=%s)",
-		*addr, *cert != "", token != "", *cacheTTL, embedName(*embedURL, *embedModel), *natsAddr)
+	log.Printf("promptnet serving on %s (tls=%v auth=%d-token cache-ttl=%v embed=%s nats=%s)",
+		*addr, *cert != "", len(tokens), *cacheTTL, embedName(*embedURL, *embedModel), *natsAddr)
 	if err := gs.Serve(lis); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// loadTokens gathers bearer tokens from PROMPTNET_TOKEN and an optional file
+// (one token per line, blank lines and # comments ignored). Empty set = no auth.
+func loadTokens(file string) map[string]bool {
+	tokens := map[string]bool{}
+	if t := os.Getenv("PROMPTNET_TOKEN"); t != "" {
+		tokens[t] = true
+	}
+	if file != "" {
+		b, err := os.ReadFile(file)
+		if err != nil {
+			log.Fatal(err)
+		}
+		for _, line := range strings.Split(string(b), "\n") {
+			if t := strings.TrimSpace(line); t != "" && !strings.HasPrefix(t, "#") {
+				tokens[t] = true
+			}
+		}
+	}
+	return tokens
 }
 
 // splitHostPort parses host:port; an empty host means all interfaces.
@@ -146,7 +168,7 @@ func put(args []string) {
 	fs := flag.NewFlagSet("put", flag.ExitOnError)
 	uri := fs.String("uri", "", "promptnet:// uri")
 	file := fs.String("file", "-", "template file (- for stdin)")
-	dbPath := fs.String("db", "promptnet.db", "sqlite path")
+	dbPath := fs.String("db", "promptnet.db", "sqlite file path, or a postgres:// DSN for enterprise")
 	force := fs.Bool("force", false, "store even if the edit is a structural change")
 	embedURL := fs.String("embed-url", os.Getenv("PROMPTNET_EMBED_URL"), "embeddings URL for the pre-commit semantic check")
 	embedModel := fs.String("embed-model", os.Getenv("PROMPTNET_EMBED_MODEL"), "embedding model name")

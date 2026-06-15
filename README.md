@@ -175,12 +175,27 @@ print(prompt.version_hash)  # 80ec4e4d...
 text = prompt.template.format(name="Sujal", org="Acme")
 ```
 
-`PromptClient(host, token=None, tls=False, ca_cert=None)`:
+`PromptClient(host, token=None, tls=False, ca_cert=None, cache_ttl=0, nats_url=None)`:
 
 - `host` — `address:port` of the server.
 - `token` — sent as the `authorization: Bearer <token>` header; omit if the
   server has no token set.
 - `tls` / `ca_cert` — use a TLS connection, optionally pinning a CA certificate.
+- `cache_ttl` — L1 cache TTL in seconds (Phase 2); `nats_url` — for `subscribe()`.
+
+### JavaScript (Node)
+
+A Node adapter mirrors the Python one in [adapters/js/client.js](adapters/js/client.js).
+It loads the `.proto` at runtime (`@grpc/proto-loader`), so there's no codegen:
+
+```js
+const { PromptClient } = require("./adapters/js/client");
+const client = new PromptClient({ host: "localhost:8443", token: "secret" });
+const prompt = await client.get("promptnet://acme/onboarding/welcome");
+console.log(prompt.template, prompt.version_hash);
+```
+
+`npm i @grpc/grpc-js @grpc/proto-loader` (and `nats` for `subscribe()`).
 
 ---
 
@@ -275,10 +290,13 @@ The same function is the write-time gate (in `put`) and the serve-time gate (in
 ## Authentication & TLS
 
 - **Auth** — set `PROMPTNET_TOKEN` when starting the server. Every request must
-  then send `authorization: Bearer <token>`; the check is constant-time. If the
-  variable is unset, the server runs open (useful for local dev).
-  > This is a single shared token for now. Per-organization API keys are a
-  > later-phase concern.
+  then send `authorization: Bearer <token>`; the check is constant-time. With no
+  tokens configured the server runs open (useful for local dev).
+  - **Multiple keys** — pass `-tokens-file tokens.txt` (one token per line, `#`
+    comments allowed) to issue and revoke per-client keys independently; these
+    add to `PROMPTNET_TOKEN`. Any listed token authenticates.
+    > This is authentication only — per-org *authorization* (scoping which
+    > prompts an org may read or write) is not modeled yet.
 - **TLS** — pass `-tls-cert` and `-tls-key` to `serve` to terminate TLS. On the
   client, set `tls=True` (and optionally `ca_cert=...`). Without these flags the
   server listens in plaintext.
@@ -287,9 +305,19 @@ The same function is the write-time gate (in `put`) and the serve-time gate (in
 
 ## Storage & version hashing
 
-[internal/store/store.go](internal/store/store.go) uses the pure-Go
-`modernc.org/sqlite` driver, so there's no cgo and the binary stays
-self-contained. One table:
+[internal/store/store.go](internal/store/store.go) runs on **SQLite** (pure-Go
+`modernc.org/sqlite`, no cgo, single binary — the self-hosted default) or
+**PostgreSQL** for multi-node enterprise. The backend is chosen from the `-db`
+value: a file path uses SQLite; a `postgres://…` DSN uses Postgres (via `pgx`).
+The schema and the upsert are portable across both; only the driver and
+placeholder style differ.
+
+```sh
+promptnet serve -db promptnet.db                          # sqlite (default)
+promptnet serve -db postgres://user:pass@host:5432/prompts  # postgres
+```
+
+One table:
 
 ```sql
 CREATE TABLE prompts (
