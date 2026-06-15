@@ -13,7 +13,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -67,6 +69,9 @@ func serve(args []string) {
 	embedModel := fs.String("embed-model", os.Getenv("PROMPTNET_EMBED_MODEL"), "embedding model name")
 	natsAddr := fs.String("nats-addr", "127.0.0.1:4222", "embedded NATS listen address for pub/sub; empty disables it")
 	tokensFile := fs.String("tokens-file", "", "file of `token [org]` lines (# comments ok); org scopes the token, blank = admin")
+	metricsAddr := fs.String("metrics-addr", ":2112", "Prometheus /metrics listen address; empty disables it")
+	rateLimit := fs.Float64("rate-limit", 0, "per-org request/sec limit; 0 disables")
+	rateBurst := fs.Int("rate-burst", 0, "per-org burst size; 0 = equal to -rate-limit")
 	fs.Parse(args)
 	tokens := loadTokens(*tokensFile)
 	embedKey := os.Getenv("PROMPTNET_EMBED_KEY")
@@ -91,7 +96,24 @@ func serve(args []string) {
 		notifier = bus
 	}
 
-	opts := []grpc.ServerOption{grpc.UnaryInterceptor(server.AuthInterceptor(tokens))}
+	if *metricsAddr != "" {
+		go func() {
+			mux := http.NewServeMux()
+			mux.Handle("/metrics", server.MetricsHandler())
+			log.Printf("metrics on %s/metrics", *metricsAddr)
+			if err := http.ListenAndServe(*metricsAddr, mux); err != nil {
+				log.Printf("metrics server stopped: %v", err)
+			}
+		}()
+	}
+
+	audit := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	opts := []grpc.ServerOption{grpc.ChainUnaryInterceptor(
+		server.MetricsInterceptor,                       // outermost: observes every outcome
+		server.AuthInterceptor(tokens),                  // sets org scope
+		server.AuditInterceptor(audit),                  // logs with scope, sees rate-limit rejections
+		server.RateLimitInterceptor(*rateLimit, *rateBurst),
+	)}
 	if *cert != "" && *key != "" {
 		creds, err := credentials.NewServerTLSFromFile(*cert, *key)
 		if err != nil {
@@ -106,8 +128,8 @@ func serve(args []string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("promptnet serving on %s (tls=%v auth=%d-token cache=%s embed=%s nats=%s)",
-		*addr, *cert != "", len(tokens), cacheName(*redisURL, *cacheTTL), embedName(*embedURL, *embedModel), *natsAddr)
+	log.Printf("promptnet serving on %s (tls=%v auth=%d-token cache=%s embed=%s nats=%s metrics=%s ratelimit=%g/s)",
+		*addr, *cert != "", len(tokens), cacheName(*redisURL, *cacheTTL), embedName(*embedURL, *embedModel), *natsAddr, *metricsAddr, *rateLimit)
 	if err := gs.Serve(lis); err != nil {
 		log.Fatal(err)
 	}
