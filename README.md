@@ -292,11 +292,21 @@ The same function is the write-time gate (in `put`) and the serve-time gate (in
 - **Auth** — set `PROMPTNET_TOKEN` when starting the server. Every request must
   then send `authorization: Bearer <token>`; the check is constant-time. With no
   tokens configured the server runs open (useful for local dev).
-  - **Multiple keys** — pass `-tokens-file tokens.txt` (one token per line, `#`
-    comments allowed) to issue and revoke per-client keys independently; these
-    add to `PROMPTNET_TOKEN`. Any listed token authenticates.
-    > This is authentication only — per-org *authorization* (scoping which
-    > prompts an org may read or write) is not modeled yet.
+  - **Multiple keys + org scoping** — pass `-tokens-file tokens.txt` with
+    `token [org]` lines (`#` comments allowed). A bare token is **admin** (all
+    orgs); `token acme` scopes that key to `promptnet://acme/…`. `PROMPTNET_TOKEN`
+    is always an admin key.
+
+    ```text
+    # tokens.txt
+    s3cr3t-admin          # admin: every org
+    acme-key      acme    # scoped: only promptnet://acme/…
+    ```
+
+    Every RPC (`GetPrompt`, `DiffPrompt`, `PublishPrompt`) checks the URI's org
+    against the caller's scope and returns `PermissionDenied` on a mismatch.
+    > Authorization is org-prefix scoping only; finer-grained per-prompt or
+    > read-vs-write rules aren't modeled yet.
 - **TLS** — pass `-tls-cert` and `-tls-key` to `serve` to terminate TLS. On the
   client, set `tls=True` (and optionally `ca_cert=...`). Without these flags the
   server listens in plaintext.
@@ -353,11 +363,20 @@ client.get("promptnet://acme/onboarding/welcome")  # first call hits the server
 client.get("promptnet://acme/onboarding/welcome")  # served from L1 for 30s
 ```
 
-Why TTL and not Redis: a changed prompt produces a new `version_hash`, so content
-is always self-identifying; TTL just bounds how long a URI→version mapping can
-lag. The server cache is in-process to keep the **single binary, zero external
-dependencies** promise. Redis + LRU is the swap when serving goes multi-node —
-deferred until it's actually needed.
+By default L2 is **in-process**, keeping the single-binary promise. For
+multi-node deployments, point it at **Redis** so instances share one cache:
+
+```sh
+promptnet serve -redis-url redis://localhost:6379/0   # or PROMPTNET_REDIS_URL
+```
+
+Both implement the same `Cache` interface
+([internal/server/cache.go](internal/server/cache.go),
+[internal/server/redis_cache.go](internal/server/redis_cache.go)); responses are
+stored as marshaled protobuf with the TTL as key expiry, and every op is
+best-effort — a Redis hiccup degrades to a cache miss, never a serving error.
+A changed prompt produces a new `version_hash`, so content is always
+self-identifying; TTL just bounds how long a URI→version mapping can lag.
 
 ---
 

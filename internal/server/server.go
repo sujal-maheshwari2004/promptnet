@@ -5,7 +5,6 @@ import (
 	"crypto/subtle"
 	"errors"
 	"strings"
-	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -27,25 +26,23 @@ type Notifier interface {
 type Server struct {
 	pb.UnimplementedPromptServiceServer
 	Store    *store.Store
-	Cache    *ttlCache        // L2 cache; nil disables it
+	Cache    Cache            // L2 cache (mem or Redis); nil disables it
 	Embedder semdiff.Embedder // configured at startup; used by DiffPrompt
 	Notifier Notifier         // Phase 4 pub/sub; nil disables it
 }
 
-// NewServer wires a server with an L2 cache of the given TTL (non-positive
-// disables it), the embedder used for semantic diffs, and the pub/sub notifier
-// (nil to disable distribution).
-func NewServer(st *store.Store, ttl time.Duration, emb semdiff.Embedder, n Notifier) *Server {
-	s := &Server{Store: st, Embedder: emb, Notifier: n}
-	if ttl > 0 {
-		s.Cache = newTTLCache(ttl)
-	}
-	return s
+// NewServer wires a server with an L2 cache (nil to disable), the embedder used
+// for semantic diffs, and the pub/sub notifier (nil to disable distribution).
+func NewServer(st *store.Store, cache Cache, emb semdiff.Embedder, n Notifier) *Server {
+	return &Server{Store: st, Cache: cache, Embedder: emb, Notifier: n}
 }
 
 // PublishPrompt validates, stores a new prompt version, invalidates its cache
 // entry, and notifies subscribers — the write-through publisher path.
 func (s *Server) PublishPrompt(ctx context.Context, req *pb.PublishPromptRequest) (*pb.PublishPromptResponse, error) {
+	if err := authorize(ctx, req.GetUri()); err != nil {
+		return nil, err
+	}
 	if err := validate.Prompt(req.GetUri(), req.GetTemplate(), req.GetSlots()); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid prompt: %v", err)
 	}
@@ -60,7 +57,9 @@ func (s *Server) PublishPrompt(ctx context.Context, req *pb.PublishPromptRequest
 	if err := s.Store.Put(ctx, store.Prompt{URI: req.GetUri(), Template: req.GetTemplate(), Slots: req.GetSlots()}); err != nil {
 		return nil, status.Errorf(codes.Internal, "store failed: %v", err)
 	}
-	s.Cache.invalidate(req.GetUri())
+	if s.Cache != nil {
+		s.Cache.Invalidate(req.GetUri())
+	}
 	if s.Notifier != nil {
 		// Best-effort: the version is durably stored even if the notify fails;
 		// subscribers still converge on the next TTL poll.
@@ -71,8 +70,13 @@ func (s *Server) PublishPrompt(ctx context.Context, req *pb.PublishPromptRequest
 
 func (s *Server) GetPrompt(ctx context.Context, req *pb.GetPromptRequest) (*pb.GetPromptResponse, error) {
 	uri := req.GetUri()
-	if resp, ok := s.Cache.get(uri); ok {
-		return resp, nil
+	if err := authorize(ctx, uri); err != nil {
+		return nil, err
+	}
+	if s.Cache != nil {
+		if resp, ok := s.Cache.Get(uri); ok {
+			return resp, nil
+		}
 	}
 	p, err := s.Store.Get(ctx, uri)
 	if errors.Is(err, store.ErrNotFound) {
@@ -92,13 +96,18 @@ func (s *Server) GetPrompt(ctx context.Context, req *pb.GetPromptRequest) (*pb.G
 		Slots:       p.Slots,
 		VersionHash: p.VersionHash,
 	}
-	s.Cache.put(uri, resp)
+	if s.Cache != nil {
+		s.Cache.Put(uri, resp)
+	}
 	return resp, nil
 }
 
 // DiffPrompt runs the Semantic Propagation Diff between the stored prompt (the
 // original) and the supplied edited template, using the server's embedder.
 func (s *Server) DiffPrompt(ctx context.Context, req *pb.DiffPromptRequest) (*pb.DiffPromptResponse, error) {
+	if err := authorize(ctx, req.GetUri()); err != nil {
+		return nil, err
+	}
 	p, err := s.Store.Get(ctx, req.GetUri())
 	if errors.Is(err, store.ErrNotFound) {
 		return nil, status.Errorf(codes.NotFound, "prompt %q not found", req.GetUri())
@@ -141,15 +150,19 @@ func splitLines(s string) []string {
 	return strings.Split(strings.ReplaceAll(s, "\r\n", "\n"), "\n")
 }
 
-// AuthInterceptor enforces bearer tokens. An empty set disables auth; any token
-// in the set authenticates, so you can issue and revoke keys per client without
-// rotating everyone.
-// ponytail: authentication only — per-org *authorization* (scoping which prompts
-// an org may read/write) isn't modeled yet; add it here when multi-tenant.
-func AuthInterceptor(tokens map[string]bool) grpc.UnaryServerInterceptor {
-	wants := make([][]byte, 0, len(tokens))
-	for t := range tokens {
-		wants = append(wants, []byte("Bearer "+t))
+type scopeKey struct{}
+
+// AuthInterceptor authenticates bearer tokens and attaches each token's scope
+// (the org it is allowed to act on, "" = all orgs) to the context. An empty
+// token map disables auth, leaving every request unscoped (full access).
+func AuthInterceptor(tokens map[string]string) grpc.UnaryServerInterceptor {
+	type entry struct {
+		want []byte
+		org  string
+	}
+	wants := make([]entry, 0, len(tokens))
+	for t, org := range tokens {
+		wants = append(wants, entry{want: []byte("Bearer " + t), org: org})
 	}
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		if len(wants) == 0 {
@@ -161,15 +174,34 @@ func AuthInterceptor(tokens map[string]bool) grpc.UnaryServerInterceptor {
 				got = []byte(v[0])
 			}
 		}
-		ok := false
+		ok, org := false, ""
 		for _, w := range wants { // no early break: keep timing independent of which key matches
-			if subtle.ConstantTimeCompare(got, w) == 1 {
-				ok = true
+			if subtle.ConstantTimeCompare(got, w.want) == 1 {
+				ok, org = true, w.org
 			}
 		}
 		if !ok {
 			return nil, status.Error(codes.Unauthenticated, "invalid or missing token")
 		}
-		return handler(ctx, req)
+		return handler(context.WithValue(ctx, scopeKey{}, org), req)
 	}
+}
+
+// authorize enforces the caller's org scope: a token scoped to org "acme" may
+// only touch promptnet://acme/… An empty scope (admin, or auth disabled) passes.
+func authorize(ctx context.Context, uri string) error {
+	scope, _ := ctx.Value(scopeKey{}).(string)
+	if scope == "" || scope == orgOf(uri) {
+		return nil
+	}
+	return status.Errorf(codes.PermissionDenied, "token not authorized for org %q", orgOf(uri))
+}
+
+// orgOf returns the first path segment of a prompt URI (the owning org).
+func orgOf(uri string) string {
+	s := strings.TrimPrefix(uri, "promptnet://")
+	if i := strings.IndexByte(s, '/'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }

@@ -62,10 +62,11 @@ func serve(args []string) {
 	cert := fs.String("tls-cert", "", "TLS cert file (optional)")
 	key := fs.String("tls-key", "", "TLS key file (optional)")
 	cacheTTL := fs.Duration("cache-ttl", 30*time.Second, "L2 server cache TTL; 0 disables")
+	redisURL := fs.String("redis-url", os.Getenv("PROMPTNET_REDIS_URL"), "redis:// URL for a shared L2 cache (default: in-process cache)")
 	embedURL := fs.String("embed-url", os.Getenv("PROMPTNET_EMBED_URL"), "OpenAI-compatible /v1/embeddings URL for semantic diff (default: offline lexical embedder)")
 	embedModel := fs.String("embed-model", os.Getenv("PROMPTNET_EMBED_MODEL"), "embedding model name")
 	natsAddr := fs.String("nats-addr", "127.0.0.1:4222", "embedded NATS listen address for pub/sub; empty disables it")
-	tokensFile := fs.String("tokens-file", "", "file of bearer tokens, one per line (# comments ok); adds to PROMPTNET_TOKEN")
+	tokensFile := fs.String("tokens-file", "", "file of `token [org]` lines (# comments ok); org scopes the token, blank = admin")
 	fs.Parse(args)
 	tokens := loadTokens(*tokensFile)
 	embedKey := os.Getenv("PROMPTNET_EMBED_KEY")
@@ -77,6 +78,7 @@ func serve(args []string) {
 	defer st.Close()
 
 	emb := buildEmbedder(*embedURL, *embedModel, embedKey)
+	cache := buildCache(*redisURL, *cacheTTL)
 
 	var notifier server.Notifier
 	if *natsAddr != "" {
@@ -98,25 +100,51 @@ func serve(args []string) {
 		opts = append(opts, grpc.Creds(creds))
 	}
 	gs := grpc.NewServer(opts...)
-	pb.RegisterPromptServiceServer(gs, server.NewServer(st, *cacheTTL, emb, notifier))
+	pb.RegisterPromptServiceServer(gs, server.NewServer(st, cache, emb, notifier))
 
 	lis, err := net.Listen("tcp", *addr)
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("promptnet serving on %s (tls=%v auth=%d-token cache-ttl=%v embed=%s nats=%s)",
-		*addr, *cert != "", len(tokens), *cacheTTL, embedName(*embedURL, *embedModel), *natsAddr)
+	log.Printf("promptnet serving on %s (tls=%v auth=%d-token cache=%s embed=%s nats=%s)",
+		*addr, *cert != "", len(tokens), cacheName(*redisURL, *cacheTTL), embedName(*embedURL, *embedModel), *natsAddr)
 	if err := gs.Serve(lis); err != nil {
 		log.Fatal(err)
 	}
 }
 
-// loadTokens gathers bearer tokens from PROMPTNET_TOKEN and an optional file
-// (one token per line, blank lines and # comments ignored). Empty set = no auth.
-func loadTokens(file string) map[string]bool {
-	tokens := map[string]bool{}
+// buildCache picks the L2 cache: Redis when a URL is given, else the in-process
+// cache (or none when ttl<=0).
+func buildCache(redisURL string, ttl time.Duration) server.Cache {
+	if redisURL != "" {
+		c, err := server.NewRedisCache(redisURL, ttl)
+		if err != nil {
+			log.Fatalf("redis: %v", err)
+		}
+		return c
+	}
+	return server.NewMemCache(ttl)
+}
+
+func cacheName(redisURL string, ttl time.Duration) string {
+	switch {
+	case redisURL != "":
+		return "redis"
+	case ttl > 0:
+		return "mem"
+	default:
+		return "off"
+	}
+}
+
+// loadTokens reads bearer tokens and their org scope. PROMPTNET_TOKEN is an
+// admin token (all orgs). The file has `token [org]` lines — an org scopes the
+// token to promptnet://org/…; blank lines and # comments are ignored. Empty
+// result = auth disabled.
+func loadTokens(file string) map[string]string {
+	tokens := map[string]string{}
 	if t := os.Getenv("PROMPTNET_TOKEN"); t != "" {
-		tokens[t] = true
+		tokens[t] = "" // admin
 	}
 	if file != "" {
 		b, err := os.ReadFile(file)
@@ -124,9 +152,16 @@ func loadTokens(file string) map[string]bool {
 			log.Fatal(err)
 		}
 		for _, line := range strings.Split(string(b), "\n") {
-			if t := strings.TrimSpace(line); t != "" && !strings.HasPrefix(t, "#") {
-				tokens[t] = true
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
 			}
+			fields := strings.Fields(line)
+			org := ""
+			if len(fields) > 1 {
+				org = fields[1]
+			}
+			tokens[fields[0]] = org
 		}
 	}
 	return tokens

@@ -25,7 +25,7 @@ func newTestServer(t *testing.T) (*Server, *fakeNotifier) {
 	}
 	t.Cleanup(func() { st.Close() })
 	n := &fakeNotifier{}
-	return NewServer(st, 0, nil, n), n
+	return NewServer(st, nil, nil, n), n
 }
 
 func TestPublishThenGet(t *testing.T) {

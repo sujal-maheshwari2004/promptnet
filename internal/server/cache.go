@@ -7,16 +7,27 @@ import (
 	pb "promptnet/gen/promptnet/v1"
 )
 
-// ttlCache is the Phase 2 L2 (server-side) cache: in-process, keyed by URI,
-// entries expire after ttl. Only validated prompts are ever put here.
-//
-// TTL is the convergence mechanism: a `put` that changes a prompt is reflected
-// within ttl. Content identity is the version_hash — a changed prompt yields a
-// new hash, so a stale entry is always distinguishable from fresh content.
-//
-// ponytail: in-process map, unbounded (entries are bounded by the prompt count,
-// which is small). Swap for Redis + LRU only when serving goes multi-node or the
-// prompt set stops fitting in memory.
+// Cache is the L2 (server-side) cache. Two implementations: an in-process map
+// (the zero-dependency default) and Redis (for multi-node deployments). Only
+// validated prompts are ever Put. TTL is the convergence mechanism — a republish
+// is reflected within ttl, and a changed prompt yields a new version_hash.
+type Cache interface {
+	Get(uri string) (*pb.GetPromptResponse, bool)
+	Put(uri string, resp *pb.GetPromptResponse)
+	Invalidate(uri string)
+}
+
+// NewMemCache returns the in-process cache, or nil (caching disabled) when ttl
+// is non-positive.
+// ponytail: unbounded map (entries bounded by prompt count, which is small).
+// Use Redis or add LRU only when serving goes multi-node or memory gets tight.
+func NewMemCache(ttl time.Duration) Cache {
+	if ttl <= 0 {
+		return nil
+	}
+	return &ttlCache{ttl: ttl, m: map[string]cacheEntry{}}
+}
+
 type ttlCache struct {
 	ttl time.Duration
 	mu  sync.RWMutex
@@ -28,15 +39,7 @@ type cacheEntry struct {
 	expiry time.Time
 }
 
-func newTTLCache(ttl time.Duration) *ttlCache {
-	return &ttlCache{ttl: ttl, m: map[string]cacheEntry{}}
-}
-
-// A nil *ttlCache is a valid disabled cache: get always misses, put is a no-op.
-func (c *ttlCache) get(uri string) (*pb.GetPromptResponse, bool) {
-	if c == nil {
-		return nil, false
-	}
+func (c *ttlCache) Get(uri string) (*pb.GetPromptResponse, bool) {
 	c.mu.RLock()
 	e, ok := c.m[uri]
 	c.mu.RUnlock()
@@ -46,20 +49,14 @@ func (c *ttlCache) get(uri string) (*pb.GetPromptResponse, bool) {
 	return e.resp, true
 }
 
-func (c *ttlCache) put(uri string, resp *pb.GetPromptResponse) {
-	if c == nil {
-		return
-	}
+func (c *ttlCache) Put(uri string, resp *pb.GetPromptResponse) {
 	c.mu.Lock()
 	c.m[uri] = cacheEntry{resp: resp, expiry: time.Now().Add(c.ttl)}
 	c.mu.Unlock()
 }
 
-// invalidate drops a URI so the next read reflects a just-published version.
-func (c *ttlCache) invalidate(uri string) {
-	if c == nil {
-		return
-	}
+// Invalidate drops a URI so the next read reflects a just-published version.
+func (c *ttlCache) Invalidate(uri string) {
 	c.mu.Lock()
 	delete(c.m, uri)
 	c.mu.Unlock()
