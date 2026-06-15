@@ -26,6 +26,7 @@ NATS pub/sub; a **Python client** for agents to fetch and subscribe; and
 - [Validation rules](#validation-rules)
 - [Authentication & TLS](#authentication--tls)
 - [Storage & version hashing](#storage--version-hashing)
+- [Observability & rate limiting](#observability--rate-limiting)
 - [Regenerating code from the proto](#regenerating-code-from-the-proto)
 - [Roadmap](#roadmap)
 
@@ -143,8 +144,10 @@ lexical by default).
 
 `put` flags: `-uri`, `-file` (`-` for stdin), `-slot` (repeatable), `-db`,
 `-force`, `-embed-url`, `-embed-model`.
-`serve` flags: `-addr`, `-db`, `-tls-cert`, `-tls-key`. Auth token comes from the
-`PROMPTNET_TOKEN` environment variable.
+`serve` flags: `-addr`, `-db`, `-tls-cert`, `-tls-key`, `-client-ca` (mTLS),
+`-tokens-file`, `-metrics-addr`, `-rate-limit`, `-rate-burst`, plus the cache /
+embed / nats flags below. Auth token comes from the `PROMPTNET_TOKEN` env var.
+Other subcommands: `backup`, `restore`, `migrate`, `gen-token` (see below).
 
 Trying to store a prompt whose template and slots disagree fails loudly and
 writes nothing:
@@ -221,11 +224,17 @@ internal/store/store.go           SQLite-backed storage. Open/Get/Put a prompt,
 
 internal/server/server.go         The gRPC handler. GetPrompt looks up the
                                   prompt, re-validates it, and returns it. Also
-                                  the auth interceptor that checks the token.
+                                  the auth interceptor (token + expiry + scope).
+internal/server/observability.go  Metrics, audit-log, and rate-limit
+                                  interceptors + the Prometheus /metrics handler.
 
-cmd/promptnet/main.go             The CLI entry point. Two subcommands:
-                                    serve  - run the gRPC server
-                                    put    - validate and store a prompt locally
+cmd/promptnet/main.go             The CLI entry point. Subcommands:
+                                    serve     - run the gRPC server
+                                    put       - validate and store a prompt
+                                    diff/publish - analyze / publish via a server
+                                    backup/restore - JSON-lines snapshot
+                                    migrate   - apply schema migrations
+                                    gen-token - mint a random bearer token
 ```
 
 **Request flow (`serve`):** agent → gRPC → `AuthInterceptor` (token check) →
@@ -298,18 +307,35 @@ The same function is the write-time gate (in `put`) and the serve-time gate (in
     is always an admin key.
 
     ```text
-    # tokens.txt
-    s3cr3t-admin          # admin: every org
-    acme-key      acme    # scoped: only promptnet://acme/…
+    # tokens.txt — `token [org] [expiry]`
+    s3cr3t-admin                       # admin: every org, never expires
+    acme-key      acme                 # scoped: only promptnet://acme/…
+    rotating-key  acme  2026-12-31     # scoped + expires (date or RFC3339)
     ```
 
     Every RPC (`GetPrompt`, `DiffPrompt`, `PublishPrompt`) checks the URI's org
     against the caller's scope and returns `PermissionDenied` on a mismatch.
     > Authorization is org-prefix scoping only; finer-grained per-prompt or
     > read-vs-write rules aren't modeled yet.
+  - **Expiry & rotation** — a third field gives a token an expiry (a `2006-01-02`
+    date or an RFC3339 timestamp); past it the token is rejected with
+    `Unauthenticated`. Rotation is just overlapping tokens: issue the new key,
+    give the old one a near-future expiry, and drop it once it lapses — no
+    downtime. `promptnet gen-token` prints a fresh random token.
 - **TLS** — pass `-tls-cert` and `-tls-key` to `serve` to terminate TLS. On the
   client, set `tls=True` (and optionally `ca_cert=...`). Without these flags the
   server listens in plaintext.
+- **mTLS (mutual TLS)** — add `-client-ca ca.pem` to `serve` to also *verify the
+  client's* certificate (`RequireAndVerifyClientCert`); connections without a
+  cert signed by that CA are refused at the TLS layer, before auth. Clients
+  present their cert with `-cert`/`-key` (on `diff`/`publish`). Requires
+  `-tls-cert`/`-tls-key` to be set too.
+
+  ```sh
+  promptnet serve -tls-cert server.pem -tls-key server.key -client-ca ca.pem
+  promptnet diff  -uri promptnet://acme/x -file e.txt -tls \
+    -ca-cert ca.pem -cert client.pem -key client.key
+  ```
 
 ---
 
@@ -342,6 +368,51 @@ CREATE TABLE prompts (
 `sha256(template + "\0" + slots)`, recomputed on every write so the hash always
 reflects current content. The `-db` flag chooses the file (default
 `promptnet.db`).
+
+### Schema migrations
+
+The schema is an ordered list of migration steps (`migrations` in
+[internal/store/store.go](internal/store/store.go)), applied once each — every
+`Open` runs the pending ones inside a transaction and records progress in a
+`schema_version` table, so startup is always idempotent and a failed step rolls
+back cleanly. To evolve the schema, **append** a step (never edit or reorder an
+existing one). `promptnet migrate -db …` applies pending steps and prints the
+version — run it as a deploy step against Postgres.
+
+### Backup & restore
+
+`backup` dumps every prompt as JSON lines; `restore` upserts them back. The
+format is portable, so it doubles as a SQLite↔Postgres migration path. Restore
+reuses the idempotent upsert, so it's safe to re-run.
+
+```sh
+promptnet backup  -db promptnet.db -out snapshot.jsonl
+promptnet restore -db postgres://user:pass@host/prompts -in snapshot.jsonl
+```
+
+---
+
+## Observability & rate limiting
+
+Three gRPC interceptors, chained in front of every RPC
+([internal/server/observability.go](internal/server/observability.go)):
+
+- **Metrics** — a Prometheus endpoint at `-metrics-addr` (default `:2112`,
+  empty disables). It exposes request counts (`promptnet_requests_total` by
+  method + gRPC code) and a latency histogram (`promptnet_request_duration_seconds`),
+  plus Go runtime metrics. Point Prometheus at it and add Prometheus as a
+  Grafana data source — a sample scrape config is in
+  [monitoring/prometheus.yml](monitoring/prometheus.yml).
+- **Audit log** — one structured (slog JSON) line per RPC on stderr: method, org
+  scope, uri, gRPC code, and latency.
+- **Rate limiting** — a per-org token bucket. Opt-in via `-rate-limit <rps>`
+  (`0` disables); `-rate-burst` sets the burst (defaults to the rps). Over-limit
+  calls get `ResourceExhausted`.
+
+```sh
+promptnet serve -metrics-addr :2112 -rate-limit 50 -rate-burst 100
+curl localhost:2112/metrics
+```
 
 ---
 
@@ -521,6 +592,5 @@ any plugins locally. Don't hand-edit generated files — they'll be overwritten.
 | **v0.2** | L1/L2 caching (TTL), keyed on `version_hash` | **this repo** |
 | **v0.3** | `promptctl` CLI: commit/diff/log/promote/push/pull, go-git versioning | **this repo** |
 | **v0.4** | Pub/sub distribution over embedded NATS, TTL sync, subscriber model | **this repo** |
-
-Also deferred: a PostgreSQL backend for multi-node enterprise deployments
-(SQLite covers single-node today).
+| **v0.5** | PostgreSQL backend, Redis L2 cache, org-scoped multi-token auth | **this repo** |
+| **v0.6** | Token expiry/rotation, mTLS, Prometheus metrics + audit log, per-org rate limiting, backup/restore, schema migrations | **this repo** |
