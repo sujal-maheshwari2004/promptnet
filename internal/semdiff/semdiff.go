@@ -23,9 +23,19 @@ import (
 	"hash/fnv"
 	"math"
 	"net/http"
+	"os"
 	"strings"
 	"unicode"
 )
+
+// EmbedderFromEnv returns the embedder configured via PROMPTNET_EMBED_URL /
+// _MODEL / _KEY, falling back to the offline lexical embedder when no URL is set.
+func EmbedderFromEnv() Embedder {
+	if url := os.Getenv("PROMPTNET_EMBED_URL"); url != "" {
+		return HTTPEmbedder{URL: url, Model: os.Getenv("PROMPTNET_EMBED_MODEL"), APIKey: os.Getenv("PROMPTNET_EMBED_KEY")}
+	}
+	return LexicalEmbedder{}
+}
 
 // Tunables. Heuristics — ponytail: tune on real prompt-edit data, these are
 // reasonable defaults, not measured constants.

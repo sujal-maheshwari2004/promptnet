@@ -1,14 +1,14 @@
-# PromptNet — Phases 1–2 (Transport, Serving & Caching)
+# PromptNet — Phases 1–3 (Transport, Serving, Caching & Versioning)
 
 PromptNet is a self-hostable, language-agnostic system for serving prompts to AI
 agents over a network — the way a Git server serves repositories. You run the
 server, your prompts live in your infrastructure, and your agents fetch them by
 URI over gRPC.
 
-This repository covers **Phases 1–2**: a single Go binary that **stores**,
-**validates**, **serves**, and **caches** prompts, plus a **Python client** for
-agents to fetch them. A full CLI and pub/sub distribution come in later phases
-(see [Roadmap](#roadmap)).
+This repository covers **Phases 1–3**: a single Go server binary that **stores**,
+**validates**, **serves**, and **caches** prompts; a **Python client** for agents
+to fetch them; and **`promptctl`**, a git-backed authoring CLI with a semantic
+propagation diff. Pub/sub distribution comes in Phase 4 (see [Roadmap](#roadmap)).
 
 ---
 
@@ -127,7 +127,22 @@ echo "Hi {name}, welcome to {org}!" > welcome.txt
 PROMPTNET_TOKEN=secret ./promptnet serve -addr :8443
 ```
 
-`put` flags: `-uri`, `-file` (`-` for stdin), `-slot` (repeatable), `-db`.
+If `put` overwrites an existing prompt, it first runs the
+[Semantic Propagation Diff](#semantic-propagation-diff-phase-3) between the stored
+version and your edit, prints the report, and **refuses a structural change**
+unless you pass `-force`:
+
+```sh
+./promptnet put -uri promptnet://x/y/z -file edited.txt
+#   ... => structural
+# structural change detected; re-run with -force to store   (exit 1)
+```
+
+This uses the same `PROMPTNET_EMBED_*` model config as the server (offline
+lexical by default).
+
+`put` flags: `-uri`, `-file` (`-` for stdin), `-slot` (repeatable), `-db`,
+`-force`, `-embed-url`, `-embed-model`.
 `serve` flags: `-addr`, `-db`, `-tls-cert`, `-tls-key`. Auth token comes from the
 `PROMPTNET_TOKEN` environment variable.
 
@@ -365,8 +380,34 @@ promptnet diff -uri promptnet://acme/support/agent -file edited.txt -addr localh
 
 Or from the Python adapter: `client.diff("promptnet://…", edited_template)`.
 
-> This is the engine behind `promptctl diff`; once Git-backed versioning lands it
-> will diff two stored refs instead of a ref against a candidate file.
+The same engine powers `promptctl diff` for local authoring (below).
+
+---
+
+## Authoring with `promptctl` (Phase 3)
+
+`promptctl` is the local authoring CLI. Prompts live as `*.prompt` files in a git
+repo; **versioning, history and lineage are plain git, embedded via go-git** (no
+external git binary needed). promptctl adds the prompt-specific layer: validation,
+the semantic propagation diff, and environment promotion. A prompt's URI is its
+path — `acme/support/agent.prompt` → `promptnet://acme/support/agent`; slots are
+read from the template's `{placeholders}`.
+
+```sh
+promptctl commit -m "msg"              # validate every *.prompt, then commit all changes
+promptctl diff [ref]                   # semantic propagation diff vs ref (default HEAD)
+promptctl log acme/support/agent.prompt   # version lineage of one prompt
+promptctl promote acme/x.prompt dev prod  # bring a prompt from branch dev onto prod
+promptctl push | pull                  # validate (push) then sync with origin
+```
+
+- **commit / push** validate first — a malformed prompt blocks the whole commit.
+- **diff** compares each changed `*.prompt` between a ref and the working tree
+  using the embedding model from `PROMPTNET_EMBED_*` (offline lexical by default).
+- **promote** is the dev → staging → prod model: environments are branches, and
+  promoting copies a validated prompt from one branch onto another and commits it.
+- **push / pull** use go-git, so they don't read git's credential helper — set
+  `PROMPTNET_GIT_TOKEN` for HTTPS remotes; SSH uses your ssh-agent.
 
 ---
 
@@ -391,7 +432,7 @@ any plugins locally. Don't hand-edit generated files — they'll be overwritten.
 | --- | --- | --- |
 | **v0.1** | gRPC server, Python adapter, validation | done |
 | **v0.2** | L1/L2 caching (TTL), keyed on `version_hash` | **this repo** |
-| v0.3 | `promptctl` CLI: push/pull/commit/diff/promote, Git-backed versioning | in progress — semantic diff landed |
+| **v0.3** | `promptctl` CLI: commit/diff/log/promote/push/pull, go-git versioning | **this repo** |
 | v0.4 | Pub/sub distribution over NATS, TTL sync, subscriber model | planned |
 
 Also deferred: a PostgreSQL backend for multi-node enterprise deployments

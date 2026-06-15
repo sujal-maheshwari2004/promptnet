@@ -8,12 +8,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
@@ -113,6 +115,9 @@ func put(args []string) {
 	uri := fs.String("uri", "", "promptnet:// uri")
 	file := fs.String("file", "-", "template file (- for stdin)")
 	dbPath := fs.String("db", "promptnet.db", "sqlite path")
+	force := fs.Bool("force", false, "store even if the edit is a structural change")
+	embedURL := fs.String("embed-url", os.Getenv("PROMPTNET_EMBED_URL"), "embeddings URL for the pre-commit semantic check")
+	embedModel := fs.String("embed-model", os.Getenv("PROMPTNET_EMBED_MODEL"), "embedding model name")
 	var slots multiFlag
 	fs.Var(&slots, "slot", "declared slot name (repeatable)")
 	fs.Parse(args)
@@ -127,10 +132,42 @@ func put(args []string) {
 		log.Fatal(err)
 	}
 	defer st.Close()
+
+	// Pre-commit semantic check: if this overwrites an existing prompt, show how
+	// far the edit ripples and refuse a structural change unless -force.
+	prev, err := st.Get(context.Background(), *uri)
+	switch {
+	case err == nil && prev.Template != template:
+		emb := buildEmbedder(*embedURL, *embedModel, os.Getenv("PROMPTNET_EMBED_KEY"))
+		res, derr := semdiff.Analyze(emb, splitLines(prev.Template), splitLines(template))
+		if derr != nil {
+			log.Fatal(derr)
+		}
+		fmt.Print(semdiff.Format(res))
+		if !*force && hasStructural(res) {
+			log.Fatal("structural change detected; re-run with -force to store")
+		}
+	case err != nil && !errors.Is(err, store.ErrNotFound):
+		log.Fatal(err)
+	}
+
 	if err := st.Put(context.Background(), store.Prompt{URI: *uri, Template: template, Slots: slots}); err != nil {
 		log.Fatal(err)
 	}
 	fmt.Printf("stored %s (%s)\n", *uri, store.Hash(template, slots)[:12])
+}
+
+func hasStructural(res []semdiff.Result) bool {
+	for _, r := range res {
+		if r.Class == "structural" {
+			return true
+		}
+	}
+	return false
+}
+
+func splitLines(s string) []string {
+	return strings.Split(strings.ReplaceAll(s, "\r\n", "\n"), "\n")
 }
 
 // diff asks the server to run the Semantic Propagation Diff between the stored
