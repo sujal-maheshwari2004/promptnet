@@ -1,6 +1,8 @@
 # Binaries
 /promptnet
 /promptnet.exe
+/promptctl
+/promptctl.exe
 
 # SQLite databases
 *.db
@@ -22,6 +24,9 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+
+# JS adapter
+node_modules/
 
 # Editor
 .idea/
