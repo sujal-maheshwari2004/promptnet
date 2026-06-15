@@ -1,14 +1,14 @@
-# PromptNet — Phases 1–3 (Transport, Serving, Caching & Versioning)
+# PromptNet — Phases 1–4 (Transport, Serving, Caching, Versioning & Distribution)
 
 PromptNet is a self-hostable, language-agnostic system for serving prompts to AI
 agents over a network — the way a Git server serves repositories. You run the
 server, your prompts live in your infrastructure, and your agents fetch them by
 URI over gRPC.
 
-This repository covers **Phases 1–3**: a single Go server binary that **stores**,
-**validates**, **serves**, and **caches** prompts; a **Python client** for agents
-to fetch them; and **`promptctl`**, a git-backed authoring CLI with a semantic
-propagation diff. Pub/sub distribution comes in Phase 4 (see [Roadmap](#roadmap)).
+This repository covers **Phases 1–4**: a single Go server binary that **stores**,
+**validates**, **serves**, **caches**, and **distributes** prompts over embedded
+NATS pub/sub; a **Python client** for agents to fetch and subscribe; and
+**`promptctl`**, a git-backed authoring CLI with a semantic propagation diff.
 
 ---
 
@@ -411,6 +411,38 @@ promptctl push | pull                  # validate (push) then sync with origin
 
 ---
 
+## Pub/Sub distribution (Phase 4)
+
+Prompt servers are publishers; agents are subscribers. The server embeds a
+**NATS** server in-process (still one binary), and the write-through
+`PublishPrompt` RPC stores a new version *and* notifies subscribers.
+
+```sh
+# server: embedded NATS is on by default (-nats-addr "" disables it)
+promptnet serve -nats-addr 127.0.0.1:4222
+
+# publish a new version -> stored, cache invalidated, subscribers notified
+promptnet publish -uri promptnet://acme/support/agent -file v2.txt -slot name
+# published promptnet://acme/support/agent (1e8284f35650) — subscribers notified
+```
+
+Each prompt maps to a NATS subject — `promptnet://acme/support/agent` →
+`promptnet.acme.support.agent`. An agent subscribes in one line (push), and the
+`cache_ttl` from Phase 2 is the pull side:
+
+```python
+client = PromptClient(host="…:8443", cache_ttl=30, nats_url="nats://…:4222")
+client.subscribe("promptnet://acme/support/agent",
+                 lambda version: print("new version", version))  # needs `pip install nats-py`
+```
+
+**Honest consistency model:** this layer is eventually consistent — a push can be
+missed (network), so TTL is the convergence guarantee, not the push. Notify is
+best-effort; the version is durably stored regardless, and subscribers converge
+on their next poll. Same tradeoff as Kafka/NATS generally.
+
+---
+
 ## Regenerating code from the proto
 
 Anything under `gen/` and `adapters/python/promptnet/v1/` is generated. After
@@ -433,7 +465,7 @@ any plugins locally. Don't hand-edit generated files — they'll be overwritten.
 | **v0.1** | gRPC server, Python adapter, validation | done |
 | **v0.2** | L1/L2 caching (TTL), keyed on `version_hash` | **this repo** |
 | **v0.3** | `promptctl` CLI: commit/diff/log/promote/push/pull, go-git versioning | **this repo** |
-| v0.4 | Pub/sub distribution over NATS, TTL sync, subscriber model | planned |
+| **v0.4** | Pub/sub distribution over embedded NATS, TTL sync, subscriber model | **this repo** |
 
 Also deferred: a PostgreSQL backend for multi-node enterprise deployments
 (SQLite covers single-node today).

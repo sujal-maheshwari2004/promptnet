@@ -18,21 +18,48 @@ import (
 	"promptnet/internal/validate"
 )
 
+// Notifier publishes version-change events. *pubsub.Bus implements it; nil
+// disables notifications.
+type Notifier interface {
+	Publish(uri, versionHash string) error
+}
+
 type Server struct {
 	pb.UnimplementedPromptServiceServer
 	Store    *store.Store
-	Cache    *ttlCache         // L2 cache; nil disables it
-	Embedder semdiff.Embedder  // configured at startup; used by DiffPrompt
+	Cache    *ttlCache        // L2 cache; nil disables it
+	Embedder semdiff.Embedder // configured at startup; used by DiffPrompt
+	Notifier Notifier         // Phase 4 pub/sub; nil disables it
 }
 
 // NewServer wires a server with an L2 cache of the given TTL (non-positive
-// disables it) and the embedder used for semantic diffs.
-func NewServer(st *store.Store, ttl time.Duration, emb semdiff.Embedder) *Server {
-	s := &Server{Store: st, Embedder: emb}
+// disables it), the embedder used for semantic diffs, and the pub/sub notifier
+// (nil to disable distribution).
+func NewServer(st *store.Store, ttl time.Duration, emb semdiff.Embedder, n Notifier) *Server {
+	s := &Server{Store: st, Embedder: emb, Notifier: n}
 	if ttl > 0 {
 		s.Cache = newTTLCache(ttl)
 	}
 	return s
+}
+
+// PublishPrompt validates, stores a new prompt version, invalidates its cache
+// entry, and notifies subscribers — the write-through publisher path.
+func (s *Server) PublishPrompt(ctx context.Context, req *pb.PublishPromptRequest) (*pb.PublishPromptResponse, error) {
+	if err := validate.Prompt(req.GetUri(), req.GetTemplate(), req.GetSlots()); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid prompt: %v", err)
+	}
+	if err := s.Store.Put(ctx, store.Prompt{URI: req.GetUri(), Template: req.GetTemplate(), Slots: req.GetSlots()}); err != nil {
+		return nil, status.Errorf(codes.Internal, "store failed: %v", err)
+	}
+	hash := store.Hash(req.GetTemplate(), req.GetSlots())
+	s.Cache.invalidate(req.GetUri())
+	if s.Notifier != nil {
+		// Best-effort: the version is durably stored even if the notify fails;
+		// subscribers still converge on the next TTL poll.
+		_ = s.Notifier.Publish(req.GetUri(), hash)
+	}
+	return &pb.PublishPromptResponse{VersionHash: hash}, nil
 }
 
 func (s *Server) GetPrompt(ctx context.Context, req *pb.GetPromptRequest) (*pb.GetPromptResponse, error) {

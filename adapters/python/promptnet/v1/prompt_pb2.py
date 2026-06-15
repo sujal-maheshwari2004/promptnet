@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x19promptnet/v1/prompt.proto\x12\x0cpromptnet.v1\"$\n\x10GetPromptRequest\x12\x10\n\x03uri\x18\x01 \x01(\tR\x03uri\"z\n\x11GetPromptResponse\x12\x10\n\x03uri\x18\x01 \x01(\tR\x03uri\x12\x1a\n\x08template\x18\x02 \x01(\tR\x08template\x12\x14\n\x05slots\x18\x03 \x03(\tR\x05slots\x12!\n\x0cversion_hash\x18\x04 \x01(\tR\x0bversionHash\"H\n\x11\x44iffPromptRequest\x12\x10\n\x03uri\x18\x01 \x01(\tR\x03uri\x12!\n\x0cnew_template\x18\x02 \x01(\tR\x0bnewTemplate\"D\n\x12\x44iffPromptResponse\x12.\n\x07\x63hanges\x18\x01 \x03(\x0b\x32\x14.promptnet.v1.ChangeR\x07\x63hanges\"6\n\x06Window\x12\x16\n\x06radius\x18\x01 \x01(\x05R\x06radius\x12\x14\n\x05\x64\x65lta\x18\x02 \x01(\x01R\x05\x64\x65lta\"\xe7\x02\n\x06\x43hange\x12\x1b\n\told_start\x18\x01 \x01(\x05R\x08oldStart\x12\x17\n\x07old_end\x18\x02 \x01(\x05R\x06oldEnd\x12\x1b\n\tnew_start\x18\x03 \x01(\x05R\x08newStart\x12\x17\n\x07new_end\x18\x04 \x01(\x05R\x06newEnd\x12\x12\n\x04kind\x18\x05 \x01(\tR\x04kind\x12\x1f\n\x0bpoint_delta\x18\x06 \x01(\x01R\npointDelta\x12$\n\x02up\x18\x07 \x03(\x0b\x32\x14.promptnet.v1.WindowR\x02up\x12(\n\x04\x64own\x18\x08 \x03(\x0b\x32\x14.promptnet.v1.WindowR\x04\x64own\x12\x1f\n\x0bup_boundary\x18\t \x01(\x08R\nupBoundary\x12#\n\rdown_boundary\x18\n \x01(\x08R\x0c\x64ownBoundary\x12&\n\x0e\x63lassification\x18\x0b \x01(\tR\x0e\x63lassification2\xae\x01\n\rPromptService\x12L\n\tGetPrompt\x12\x1e.promptnet.v1.GetPromptRequest\x1a\x1f.promptnet.v1.GetPromptResponse\x12O\n\nDiffPrompt\x12\x1f.promptnet.v1.DiffPromptRequest\x1a .promptnet.v1.DiffPromptResponseB(Z&promptnet/gen/promptnet/v1;promptnetv1b\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x19promptnet/v1/prompt.proto\x12\x0cpromptnet.v1\"$\n\x10GetPromptRequest\x12\x10\n\x03uri\x18\x01 \x01(\tR\x03uri\"z\n\x11GetPromptResponse\x12\x10\n\x03uri\x18\x01 \x01(\tR\x03uri\x12\x1a\n\x08template\x18\x02 \x01(\tR\x08template\x12\x14\n\x05slots\x18\x03 \x03(\tR\x05slots\x12!\n\x0cversion_hash\x18\x04 \x01(\tR\x0bversionHash\"Z\n\x14PublishPromptRequest\x12\x10\n\x03uri\x18\x01 \x01(\tR\x03uri\x12\x1a\n\x08template\x18\x02 \x01(\tR\x08template\x12\x14\n\x05slots\x18\x03 \x03(\tR\x05slots\":\n\x15PublishPromptResponse\x12!\n\x0cversion_hash\x18\x01 \x01(\tR\x0bversionHash\"H\n\x11\x44iffPromptRequest\x12\x10\n\x03uri\x18\x01 \x01(\tR\x03uri\x12!\n\x0cnew_template\x18\x02 \x01(\tR\x0bnewTemplate\"D\n\x12\x44iffPromptResponse\x12.\n\x07\x63hanges\x18\x01 \x03(\x0b\x32\x14.promptnet.v1.ChangeR\x07\x63hanges\"6\n\x06Window\x12\x16\n\x06radius\x18\x01 \x01(\x05R\x06radius\x12\x14\n\x05\x64\x65lta\x18\x02 \x01(\x01R\x05\x64\x65lta\"\xe7\x02\n\x06\x43hange\x12\x1b\n\told_start\x18\x01 \x01(\x05R\x08oldStart\x12\x17\n\x07old_end\x18\x02 \x01(\x05R\x06oldEnd\x12\x1b\n\tnew_start\x18\x03 \x01(\x05R\x08newStart\x12\x17\n\x07new_end\x18\x04 \x01(\x05R\x06newEnd\x12\x12\n\x04kind\x18\x05 \x01(\tR\x04kind\x12\x1f\n\x0bpoint_delta\x18\x06 \x01(\x01R\npointDelta\x12$\n\x02up\x18\x07 \x03(\x0b\x32\x14.promptnet.v1.WindowR\x02up\x12(\n\x04\x64own\x18\x08 \x03(\x0b\x32\x14.promptnet.v1.WindowR\x04\x64own\x12\x1f\n\x0bup_boundary\x18\t \x01(\x08R\nupBoundary\x12#\n\rdown_boundary\x18\n \x01(\x08R\x0c\x64ownBoundary\x12&\n\x0e\x63lassification\x18\x0b \x01(\tR\x0e\x63lassification2\x88\x02\n\rPromptService\x12L\n\tGetPrompt\x12\x1e.promptnet.v1.GetPromptRequest\x1a\x1f.promptnet.v1.GetPromptResponse\x12O\n\nDiffPrompt\x12\x1f.promptnet.v1.DiffPromptRequest\x1a .promptnet.v1.DiffPromptResponse\x12X\n\rPublishPrompt\x12\".promptnet.v1.PublishPromptRequest\x1a#.promptnet.v1.PublishPromptResponseB(Z&promptnet/gen/promptnet/v1;promptnetv1b\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -36,14 +36,18 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_GETPROMPTREQUEST']._serialized_end=79
   _globals['_GETPROMPTRESPONSE']._serialized_start=81
   _globals['_GETPROMPTRESPONSE']._serialized_end=203
-  _globals['_DIFFPROMPTREQUEST']._serialized_start=205
-  _globals['_DIFFPROMPTREQUEST']._serialized_end=277
-  _globals['_DIFFPROMPTRESPONSE']._serialized_start=279
-  _globals['_DIFFPROMPTRESPONSE']._serialized_end=347
-  _globals['_WINDOW']._serialized_start=349
-  _globals['_WINDOW']._serialized_end=403
-  _globals['_CHANGE']._serialized_start=406
-  _globals['_CHANGE']._serialized_end=765
-  _globals['_PROMPTSERVICE']._serialized_start=768
-  _globals['_PROMPTSERVICE']._serialized_end=942
+  _globals['_PUBLISHPROMPTREQUEST']._serialized_start=205
+  _globals['_PUBLISHPROMPTREQUEST']._serialized_end=295
+  _globals['_PUBLISHPROMPTRESPONSE']._serialized_start=297
+  _globals['_PUBLISHPROMPTRESPONSE']._serialized_end=355
+  _globals['_DIFFPROMPTREQUEST']._serialized_start=357
+  _globals['_DIFFPROMPTREQUEST']._serialized_end=429
+  _globals['_DIFFPROMPTRESPONSE']._serialized_start=431
+  _globals['_DIFFPROMPTRESPONSE']._serialized_end=499
+  _globals['_WINDOW']._serialized_start=501
+  _globals['_WINDOW']._serialized_end=555
+  _globals['_CHANGE']._serialized_start=558
+  _globals['_CHANGE']._serialized_end=917
+  _globals['_PROMPTSERVICE']._serialized_start=920
+  _globals['_PROMPTSERVICE']._serialized_end=1184
 # @@protoc_insertion_point(module_scope)

@@ -19,8 +19,9 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	PromptService_GetPrompt_FullMethodName  = "/promptnet.v1.PromptService/GetPrompt"
-	PromptService_DiffPrompt_FullMethodName = "/promptnet.v1.PromptService/DiffPrompt"
+	PromptService_GetPrompt_FullMethodName     = "/promptnet.v1.PromptService/GetPrompt"
+	PromptService_DiffPrompt_FullMethodName    = "/promptnet.v1.PromptService/DiffPrompt"
+	PromptService_PublishPrompt_FullMethodName = "/promptnet.v1.PromptService/PublishPrompt"
 )
 
 // PromptServiceClient is the client API for PromptService service.
@@ -35,6 +36,10 @@ type PromptServiceClient interface {
 	// `uri` (the original) and `new_template` (the edit), using the embedding
 	// model the server operator configured at startup.
 	DiffPrompt(ctx context.Context, in *DiffPromptRequest, opts ...grpc.CallOption) (*DiffPromptResponse, error)
+	// PublishPrompt validates and stores a new prompt version on the server, then
+	// notifies subscribers over NATS. This is the write-through path that makes a
+	// repo a publisher (Phase 4).
+	PublishPrompt(ctx context.Context, in *PublishPromptRequest, opts ...grpc.CallOption) (*PublishPromptResponse, error)
 }
 
 type promptServiceClient struct {
@@ -65,6 +70,16 @@ func (c *promptServiceClient) DiffPrompt(ctx context.Context, in *DiffPromptRequ
 	return out, nil
 }
 
+func (c *promptServiceClient) PublishPrompt(ctx context.Context, in *PublishPromptRequest, opts ...grpc.CallOption) (*PublishPromptResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PublishPromptResponse)
+	err := c.cc.Invoke(ctx, PromptService_PublishPrompt_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PromptServiceServer is the server API for PromptService service.
 // All implementations must embed UnimplementedPromptServiceServer
 // for forward compatibility.
@@ -77,6 +92,10 @@ type PromptServiceServer interface {
 	// `uri` (the original) and `new_template` (the edit), using the embedding
 	// model the server operator configured at startup.
 	DiffPrompt(context.Context, *DiffPromptRequest) (*DiffPromptResponse, error)
+	// PublishPrompt validates and stores a new prompt version on the server, then
+	// notifies subscribers over NATS. This is the write-through path that makes a
+	// repo a publisher (Phase 4).
+	PublishPrompt(context.Context, *PublishPromptRequest) (*PublishPromptResponse, error)
 	mustEmbedUnimplementedPromptServiceServer()
 }
 
@@ -92,6 +111,9 @@ func (UnimplementedPromptServiceServer) GetPrompt(context.Context, *GetPromptReq
 }
 func (UnimplementedPromptServiceServer) DiffPrompt(context.Context, *DiffPromptRequest) (*DiffPromptResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DiffPrompt not implemented")
+}
+func (UnimplementedPromptServiceServer) PublishPrompt(context.Context, *PublishPromptRequest) (*PublishPromptResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PublishPrompt not implemented")
 }
 func (UnimplementedPromptServiceServer) mustEmbedUnimplementedPromptServiceServer() {}
 func (UnimplementedPromptServiceServer) testEmbeddedByValue()                       {}
@@ -150,6 +172,24 @@ func _PromptService_DiffPrompt_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PromptService_PublishPrompt_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PublishPromptRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PromptServiceServer).PublishPrompt(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PromptService_PublishPrompt_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PromptServiceServer).PublishPrompt(ctx, req.(*PublishPromptRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PromptService_ServiceDesc is the grpc.ServiceDesc for PromptService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -164,6 +204,10 @@ var PromptService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DiffPrompt",
 			Handler:    _PromptService_DiffPrompt_Handler,
+		},
+		{
+			MethodName: "PublishPrompt",
+			Handler:    _PromptService_PublishPrompt_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

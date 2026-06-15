@@ -15,6 +15,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	"google.golang.org/grpc/metadata"
 
 	pb "promptnet/gen/promptnet/v1"
+	"promptnet/internal/pubsub"
 	"promptnet/internal/semdiff"
 	"promptnet/internal/server"
 	"promptnet/internal/store"
@@ -41,13 +43,15 @@ func main() {
 		put(os.Args[2:])
 	case "diff":
 		diff(os.Args[2:])
+	case "publish":
+		publish(os.Args[2:])
 	default:
 		usage()
 	}
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: promptnet serve|put|diff [flags]")
+	fmt.Fprintln(os.Stderr, "usage: promptnet serve|put|diff|publish [flags]")
 	os.Exit(2)
 }
 
@@ -60,6 +64,7 @@ func serve(args []string) {
 	cacheTTL := fs.Duration("cache-ttl", 30*time.Second, "L2 server cache TTL; 0 disables")
 	embedURL := fs.String("embed-url", os.Getenv("PROMPTNET_EMBED_URL"), "OpenAI-compatible /v1/embeddings URL for semantic diff (default: offline lexical embedder)")
 	embedModel := fs.String("embed-model", os.Getenv("PROMPTNET_EMBED_MODEL"), "embedding model name")
+	natsAddr := fs.String("nats-addr", "127.0.0.1:4222", "embedded NATS listen address for pub/sub; empty disables it")
 	fs.Parse(args)
 	token := os.Getenv("PROMPTNET_TOKEN")
 	embedKey := os.Getenv("PROMPTNET_EMBED_KEY")
@@ -72,6 +77,17 @@ func serve(args []string) {
 
 	emb := buildEmbedder(*embedURL, *embedModel, embedKey)
 
+	var notifier server.Notifier
+	if *natsAddr != "" {
+		host, port := splitHostPort(*natsAddr)
+		bus, err := pubsub.NewEmbedded(host, port)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer bus.Close()
+		notifier = bus
+	}
+
 	opts := []grpc.ServerOption{grpc.UnaryInterceptor(server.AuthInterceptor(token))}
 	if *cert != "" && *key != "" {
 		creds, err := credentials.NewServerTLSFromFile(*cert, *key)
@@ -81,17 +97,33 @@ func serve(args []string) {
 		opts = append(opts, grpc.Creds(creds))
 	}
 	gs := grpc.NewServer(opts...)
-	pb.RegisterPromptServiceServer(gs, server.NewServer(st, *cacheTTL, emb))
+	pb.RegisterPromptServiceServer(gs, server.NewServer(st, *cacheTTL, emb, notifier))
 
 	lis, err := net.Listen("tcp", *addr)
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("promptnet serving on %s (tls=%v auth=%v cache-ttl=%v embed=%s)",
-		*addr, *cert != "", token != "", *cacheTTL, embedName(*embedURL, *embedModel))
+	log.Printf("promptnet serving on %s (tls=%v auth=%v cache-ttl=%v embed=%s nats=%s)",
+		*addr, *cert != "", token != "", *cacheTTL, embedName(*embedURL, *embedModel), *natsAddr)
 	if err := gs.Serve(lis); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// splitHostPort parses host:port; an empty host means all interfaces.
+func splitHostPort(addr string) (string, int) {
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		log.Fatalf("bad -nats-addr %q: %v", addr, err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		log.Fatalf("bad -nats-addr port %q: %v", portStr, err)
+	}
+	if host == "" {
+		host = "0.0.0.0"
+	}
+	return host, port
 }
 
 // buildEmbedder picks the operator-configured embedding model. With no URL it
@@ -186,29 +218,65 @@ func diff(args []string) {
 	}
 	edited := readTemplate(*file)
 
-	creds := insecure.NewCredentials()
-	if *useTLS {
-		var err error
-		if creds, err = credentials.NewClientTLSFromFile(*caCert, ""); err != nil {
-			log.Fatal(err)
-		}
-	}
-	conn, err := grpc.NewClient(*addr, grpc.WithTransportCredentials(creds))
-	if err != nil {
-		log.Fatal(err)
-	}
+	conn := dial(*addr, *useTLS, *caCert)
 	defer conn.Close()
-
-	ctx := context.Background()
-	if token := os.Getenv("PROMPTNET_TOKEN"); token != "" {
-		ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+token)
-	}
-	resp, err := pb.NewPromptServiceClient(conn).DiffPrompt(ctx,
+	resp, err := pb.NewPromptServiceClient(conn).DiffPrompt(authCtx(),
 		&pb.DiffPromptRequest{Uri: *uri, NewTemplate: edited})
 	if err != nil {
 		log.Fatal(err)
 	}
 	fmt.Print(semdiff.Format(fromProto(resp)))
+}
+
+// publish stores a new prompt version on the server and notifies subscribers.
+func publish(args []string) {
+	fs := flag.NewFlagSet("publish", flag.ExitOnError)
+	addr := fs.String("addr", "localhost:8443", "server address")
+	uri := fs.String("uri", "", "promptnet:// uri")
+	file := fs.String("file", "-", "template file (- for stdin)")
+	useTLS := fs.Bool("tls", false, "use TLS")
+	caCert := fs.String("ca-cert", "", "CA cert for TLS (optional)")
+	var slots multiFlag
+	fs.Var(&slots, "slot", "declared slot name (repeatable)")
+	fs.Parse(args)
+	if *uri == "" {
+		log.Fatal("usage: promptnet publish -uri promptnet://... -file tmpl.txt [-slot name ...]")
+	}
+	template := readTemplate(*file)
+
+	conn := dial(*addr, *useTLS, *caCert)
+	defer conn.Close()
+	resp, err := pb.NewPromptServiceClient(conn).PublishPrompt(authCtx(),
+		&pb.PublishPromptRequest{Uri: *uri, Template: template, Slots: slots})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("published %s (%s) — subscribers notified\n", *uri, resp.GetVersionHash()[:12])
+}
+
+// dial opens a gRPC client connection, optionally over TLS.
+func dial(addr string, useTLS bool, caCert string) *grpc.ClientConn {
+	creds := insecure.NewCredentials()
+	if useTLS {
+		var err error
+		if creds, err = credentials.NewClientTLSFromFile(caCert, ""); err != nil {
+			log.Fatal(err)
+		}
+	}
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(creds))
+	if err != nil {
+		log.Fatal(err)
+	}
+	return conn
+}
+
+// authCtx attaches the bearer token from PROMPTNET_TOKEN, if set.
+func authCtx() context.Context {
+	ctx := context.Background()
+	if token := os.Getenv("PROMPTNET_TOKEN"); token != "" {
+		ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+token)
+	}
+	return ctx
 }
 
 // fromProto rebuilds semdiff.Results so the shared formatter can render them.

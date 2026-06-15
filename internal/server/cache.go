@@ -54,3 +54,13 @@ func (c *ttlCache) put(uri string, resp *pb.GetPromptResponse) {
 	c.m[uri] = cacheEntry{resp: resp, expiry: time.Now().Add(c.ttl)}
 	c.mu.Unlock()
 }
+
+// invalidate drops a URI so the next read reflects a just-published version.
+func (c *ttlCache) invalidate(uri string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	delete(c.m, uri)
+	c.mu.Unlock()
+}
