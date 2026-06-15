@@ -398,8 +398,16 @@ promptctl commit -m "msg"              # validate every *.prompt, then commit al
 promptctl diff [ref]                   # semantic propagation diff vs ref (default HEAD)
 promptctl log acme/support/agent.prompt   # version lineage of one prompt
 promptctl promote acme/x.prompt dev prod  # bring a prompt from branch dev onto prod
-promptctl push | pull                  # validate (push) then sync with origin
+promptctl push [-server host:port]     # validate, git push, then publish to the live server
+promptctl pull                         # sync with origin
+promptctl publish -server host:port [paths…]  # publish to the live server + notify subscribers
 ```
+
+**Authoring flows into distribution.** `promptctl push -server …` git-pushes
+*and* publishes each prompt to the live server, so subscribers are notified in
+the same step. Publishing is idempotent server-side (`PublishPrompt` is a no-op
+when the version hash is unchanged), so only actually-changed prompts fire a
+notification. git stays the source of truth; the server is the live serving copy.
 
 - **commit / push** validate first — a malformed prompt blocks the whole commit.
 - **diff** compares each changed `*.prompt` between a ref and the working tree

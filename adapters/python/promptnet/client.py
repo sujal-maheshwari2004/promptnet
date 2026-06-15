@@ -75,7 +75,8 @@ class PromptClient:
                 nc = await nats.connect(self._nats_url)
 
                 async def handler(msg):
-                    self._cache.pop(uri, None)  # drop stale cache, force refresh
+                    self._cache.pop(uri, None)  # drop stale cache
+                    self.get(uri)  # refetch now so the next get() is warm
                     on_change(msg.data.decode())
 
                 await nc.subscribe(subject, cb=handler)

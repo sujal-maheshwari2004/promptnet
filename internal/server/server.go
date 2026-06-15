@@ -49,10 +49,17 @@ func (s *Server) PublishPrompt(ctx context.Context, req *pb.PublishPromptRequest
 	if err := validate.Prompt(req.GetUri(), req.GetTemplate(), req.GetSlots()); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid prompt: %v", err)
 	}
+	hash := store.Hash(req.GetTemplate(), req.GetSlots())
+
+	// Idempotent: republishing the same content is a no-op — no write, no notify.
+	// This lets `promptctl push` publish every prompt and only changed ones fire.
+	if prev, err := s.Store.Get(ctx, req.GetUri()); err == nil && prev.VersionHash == hash {
+		return &pb.PublishPromptResponse{VersionHash: hash}, nil
+	}
+
 	if err := s.Store.Put(ctx, store.Prompt{URI: req.GetUri(), Template: req.GetTemplate(), Slots: req.GetSlots()}); err != nil {
 		return nil, status.Errorf(codes.Internal, "store failed: %v", err)
 	}
-	hash := store.Hash(req.GetTemplate(), req.GetSlots())
 	s.Cache.invalidate(req.GetUri())
 	if s.Notifier != nil {
 		// Best-effort: the version is durably stored even if the notify fails;

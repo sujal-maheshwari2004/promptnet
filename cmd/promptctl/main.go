@@ -12,6 +12,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -31,7 +32,12 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 	gitssh "github.com/go-git/go-git/v5/plumbing/transport/ssh"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 
+	pb "promptnet/gen/promptnet/v1"
 	"promptnet/internal/semdiff"
 	"promptnet/internal/validate"
 )
@@ -50,16 +56,18 @@ func main() {
 	case "promote":
 		promote(os.Args[2:])
 	case "push":
-		push()
+		pushCmd(os.Args[2:])
 	case "pull":
 		pull()
+	case "publish":
+		publishCmd(os.Args[2:])
 	default:
 		usage()
 	}
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: promptctl commit|diff|log|promote|push|pull [args]")
+	fmt.Fprintln(os.Stderr, "usage: promptctl commit|diff|log|promote|push|pull|publish [args]")
 	os.Exit(2)
 }
 
@@ -165,11 +173,83 @@ func promote(args []string) {
 	fmt.Printf("promoted %s onto %s (%s)\n", path, to, h.String()[:12])
 }
 
-func push() {
+// pushCmd validates, pushes to the git remote, and — if -server is given —
+// publishes every prompt to that live server so subscribers are notified.
+// Publishing is idempotent server-side, so only actually-changed prompts notify.
+func pushCmd(args []string) {
+	fs := flag.NewFlagSet("push", flag.ExitOnError)
+	server := fs.String("server", "", "after pushing, publish prompts to this live server (host:port)")
+	useTLS := fs.Bool("tls", false, "use TLS for -server")
+	caCert := fs.String("ca-cert", "", "CA cert for TLS -server (optional)")
+	fs.Parse(args)
+
 	validateAll()
 	r := openRepo()
-	err := r.Push(&git.PushOptions{Auth: authFor(r), Progress: os.Stdout})
-	reportSync("pushed", err)
+	reportSync("pushed", r.Push(&git.PushOptions{Auth: authFor(r), Progress: os.Stdout}))
+	if *server != "" {
+		publishToServer(*server, *useTLS, *caCert, diskPromptFiles())
+	}
+}
+
+// publishCmd publishes prompts to a live server (and notifies subscribers)
+// without touching the git remote. With no paths it publishes the whole tree.
+func publishCmd(args []string) {
+	fs := flag.NewFlagSet("publish", flag.ExitOnError)
+	server := fs.String("server", "", "live server address (host:port)")
+	useTLS := fs.Bool("tls", false, "use TLS")
+	caCert := fs.String("ca-cert", "", "CA cert for TLS (optional)")
+	fs.Parse(args)
+	if *server == "" {
+		log.Fatal("publish needs -server host:port")
+	}
+	paths := fs.Args()
+	if len(paths) == 0 {
+		paths = diskPromptFiles()
+	}
+	publishToServer(*server, *useTLS, *caCert, paths)
+}
+
+// publishToServer validates and PublishPrompts each prompt file to the server.
+func publishToServer(server string, useTLS bool, caCert string, paths []string) {
+	conn := dial(server, useTLS, caCert)
+	defer conn.Close()
+	client := pb.NewPromptServiceClient(conn)
+	ctx := authCtx()
+	for _, p := range paths {
+		t := diskContent(p)
+		slots := deriveSlots(t)
+		if err := validate.Prompt(pathToURI(p), t, slots); err != nil {
+			log.Fatalf("invalid %s: %v", p, err)
+		}
+		resp, err := client.PublishPrompt(ctx, &pb.PublishPromptRequest{Uri: pathToURI(p), Template: t, Slots: slots})
+		if err != nil {
+			log.Fatalf("publish %s: %v", p, err)
+		}
+		fmt.Printf("published %s (%s)\n", pathToURI(p), resp.GetVersionHash()[:12])
+	}
+}
+
+func dial(addr string, useTLS bool, caCert string) *grpc.ClientConn {
+	creds := insecure.NewCredentials()
+	if useTLS {
+		var err error
+		if creds, err = credentials.NewClientTLSFromFile(caCert, ""); err != nil {
+			log.Fatal(err)
+		}
+	}
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(creds))
+	if err != nil {
+		log.Fatal(err)
+	}
+	return conn
+}
+
+func authCtx() context.Context {
+	ctx := context.Background()
+	if token := os.Getenv("PROMPTNET_TOKEN"); token != "" {
+		ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+token)
+	}
+	return ctx
 }
 
 func pull() {
