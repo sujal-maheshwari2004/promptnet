@@ -44,6 +44,61 @@ func TestPutGetRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCommitGraph(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "g.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	const uri = "promptnet://o/r/p"
+
+	// Two commits on main form a chain: c2.Parent == c1.
+	c1, err := st.Commit(ctx, uri, DefaultBranch, "v1", nil, "ann", "init")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c2, err := st.Commit(ctx, uri, DefaultBranch, "v2", nil, "ann", "edit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := st.GetCommit(ctx, c2); got.Parent != c1 {
+		t.Fatalf("c2 parent = %q, want %q", got.Parent, c1)
+	}
+
+	// Branch off main, commit on the branch — main is untouched.
+	if err := st.Branch(ctx, uri, "feature", DefaultBranch); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Commit(ctx, uri, "feature", "v3-feat", nil, "bob", "feat"); err != nil {
+		t.Fatal(err)
+	}
+	mainLog, _ := st.Log(ctx, uri, DefaultBranch)
+	if len(mainLog) != 2 {
+		t.Fatalf("main log len = %d, want 2", len(mainLog))
+	}
+
+	// Merge feature into main: merge commit has two parents and takes feature's content.
+	mh, err := st.Merge(ctx, uri, DefaultBranch, "feature", "ann", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, _ := st.GetCommit(ctx, mh)
+	if m.Parent != c2 || m.Parent2 == "" {
+		t.Fatalf("merge parents = (%q,%q), want first=%q and a second", m.Parent, m.Parent2, c2)
+	}
+	if m.Template != "v3-feat" {
+		t.Fatalf("merge content = %q, want feature's v3-feat", m.Template)
+	}
+	if head, _ := st.Log(ctx, uri, DefaultBranch); head[0].Hash != mh {
+		t.Fatal("main tip is not the merge commit")
+	}
+
+	if err := st.Branch(ctx, uri, "x", "nope"); !errors.Is(err, ErrBranchNotFound) {
+		t.Fatalf("branch from missing = %v, want ErrBranchNotFound", err)
+	}
+}
+
 func TestMigrateAndDump(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "m.db")
 	st, err := Open(path)

@@ -22,6 +22,10 @@ const (
 	PromptService_GetPrompt_FullMethodName     = "/promptnet.v1.PromptService/GetPrompt"
 	PromptService_DiffPrompt_FullMethodName    = "/promptnet.v1.PromptService/DiffPrompt"
 	PromptService_PublishPrompt_FullMethodName = "/promptnet.v1.PromptService/PublishPrompt"
+	PromptService_History_FullMethodName       = "/promptnet.v1.PromptService/History"
+	PromptService_CreateBranch_FullMethodName  = "/promptnet.v1.PromptService/CreateBranch"
+	PromptService_MergeBranch_FullMethodName   = "/promptnet.v1.PromptService/MergeBranch"
+	PromptService_DiffCommits_FullMethodName   = "/promptnet.v1.PromptService/DiffCommits"
 )
 
 // PromptServiceClient is the client API for PromptService service.
@@ -40,6 +44,15 @@ type PromptServiceClient interface {
 	// notifies subscribers over NATS. This is the write-through path that makes a
 	// repo a publisher (Phase 4).
 	PublishPrompt(ctx context.Context, in *PublishPromptRequest, opts ...grpc.CallOption) (*PublishPromptResponse, error)
+	// History returns a prompt branch's commit log, newest first (first-parent).
+	History(ctx context.Context, in *HistoryRequest, opts ...grpc.CallOption) (*HistoryResponse, error)
+	// CreateBranch forks a new branch from an existing one's tip.
+	CreateBranch(ctx context.Context, in *CreateBranchRequest, opts ...grpc.CallOption) (*CreateBranchResponse, error)
+	// MergeBranch merges `from` into `into`, recording a two-parent merge commit.
+	MergeBranch(ctx context.Context, in *MergeBranchRequest, opts ...grpc.CallOption) (*MergeBranchResponse, error)
+	// DiffCommits runs the semantic diff between any two commits of a prompt — the
+	// query-anything-in-history path.
+	DiffCommits(ctx context.Context, in *DiffCommitsRequest, opts ...grpc.CallOption) (*DiffPromptResponse, error)
 }
 
 type promptServiceClient struct {
@@ -80,6 +93,46 @@ func (c *promptServiceClient) PublishPrompt(ctx context.Context, in *PublishProm
 	return out, nil
 }
 
+func (c *promptServiceClient) History(ctx context.Context, in *HistoryRequest, opts ...grpc.CallOption) (*HistoryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(HistoryResponse)
+	err := c.cc.Invoke(ctx, PromptService_History_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *promptServiceClient) CreateBranch(ctx context.Context, in *CreateBranchRequest, opts ...grpc.CallOption) (*CreateBranchResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateBranchResponse)
+	err := c.cc.Invoke(ctx, PromptService_CreateBranch_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *promptServiceClient) MergeBranch(ctx context.Context, in *MergeBranchRequest, opts ...grpc.CallOption) (*MergeBranchResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(MergeBranchResponse)
+	err := c.cc.Invoke(ctx, PromptService_MergeBranch_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *promptServiceClient) DiffCommits(ctx context.Context, in *DiffCommitsRequest, opts ...grpc.CallOption) (*DiffPromptResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DiffPromptResponse)
+	err := c.cc.Invoke(ctx, PromptService_DiffCommits_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PromptServiceServer is the server API for PromptService service.
 // All implementations must embed UnimplementedPromptServiceServer
 // for forward compatibility.
@@ -96,6 +149,15 @@ type PromptServiceServer interface {
 	// notifies subscribers over NATS. This is the write-through path that makes a
 	// repo a publisher (Phase 4).
 	PublishPrompt(context.Context, *PublishPromptRequest) (*PublishPromptResponse, error)
+	// History returns a prompt branch's commit log, newest first (first-parent).
+	History(context.Context, *HistoryRequest) (*HistoryResponse, error)
+	// CreateBranch forks a new branch from an existing one's tip.
+	CreateBranch(context.Context, *CreateBranchRequest) (*CreateBranchResponse, error)
+	// MergeBranch merges `from` into `into`, recording a two-parent merge commit.
+	MergeBranch(context.Context, *MergeBranchRequest) (*MergeBranchResponse, error)
+	// DiffCommits runs the semantic diff between any two commits of a prompt — the
+	// query-anything-in-history path.
+	DiffCommits(context.Context, *DiffCommitsRequest) (*DiffPromptResponse, error)
 	mustEmbedUnimplementedPromptServiceServer()
 }
 
@@ -114,6 +176,18 @@ func (UnimplementedPromptServiceServer) DiffPrompt(context.Context, *DiffPromptR
 }
 func (UnimplementedPromptServiceServer) PublishPrompt(context.Context, *PublishPromptRequest) (*PublishPromptResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method PublishPrompt not implemented")
+}
+func (UnimplementedPromptServiceServer) History(context.Context, *HistoryRequest) (*HistoryResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method History not implemented")
+}
+func (UnimplementedPromptServiceServer) CreateBranch(context.Context, *CreateBranchRequest) (*CreateBranchResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateBranch not implemented")
+}
+func (UnimplementedPromptServiceServer) MergeBranch(context.Context, *MergeBranchRequest) (*MergeBranchResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method MergeBranch not implemented")
+}
+func (UnimplementedPromptServiceServer) DiffCommits(context.Context, *DiffCommitsRequest) (*DiffPromptResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DiffCommits not implemented")
 }
 func (UnimplementedPromptServiceServer) mustEmbedUnimplementedPromptServiceServer() {}
 func (UnimplementedPromptServiceServer) testEmbeddedByValue()                       {}
@@ -190,6 +264,78 @@ func _PromptService_PublishPrompt_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PromptService_History_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(HistoryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PromptServiceServer).History(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PromptService_History_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PromptServiceServer).History(ctx, req.(*HistoryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PromptService_CreateBranch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateBranchRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PromptServiceServer).CreateBranch(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PromptService_CreateBranch_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PromptServiceServer).CreateBranch(ctx, req.(*CreateBranchRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PromptService_MergeBranch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(MergeBranchRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PromptServiceServer).MergeBranch(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PromptService_MergeBranch_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PromptServiceServer).MergeBranch(ctx, req.(*MergeBranchRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PromptService_DiffCommits_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DiffCommitsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PromptServiceServer).DiffCommits(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PromptService_DiffCommits_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PromptServiceServer).DiffCommits(ctx, req.(*DiffCommitsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PromptService_ServiceDesc is the grpc.ServiceDesc for PromptService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -208,6 +354,22 @@ var PromptService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "PublishPrompt",
 			Handler:    _PromptService_PublishPrompt_Handler,
+		},
+		{
+			MethodName: "History",
+			Handler:    _PromptService_History_Handler,
+		},
+		{
+			MethodName: "CreateBranch",
+			Handler:    _PromptService_CreateBranch_Handler,
+		},
+		{
+			MethodName: "MergeBranch",
+			Handler:    _PromptService_MergeBranch_Handler,
+		},
+		{
+			MethodName: "DiffCommits",
+			Handler:    _PromptService_DiffCommits_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

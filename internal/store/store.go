@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // postgres
 	_ "modernc.org/sqlite"             // sqlite
@@ -28,7 +29,33 @@ var migrations = []string{
 		slots        TEXT NOT NULL,
 		version_hash TEXT NOT NULL
 	)`,
+	// Commit DAG: every version is a commit, content-addressed and pointing at its
+	// parent(s). parent2 is set only on merge commits — two parents max, no octopus.
+	// Content is snapshotted inline (prompts are tiny; no blob/tree dedup needed).
+	`CREATE TABLE IF NOT EXISTS commits(
+		hash         TEXT PRIMARY KEY,
+		uri          TEXT NOT NULL,
+		template     TEXT NOT NULL,
+		slots        TEXT NOT NULL,
+		version_hash TEXT NOT NULL,
+		parent       TEXT,
+		parent2      TEXT,
+		author       TEXT NOT NULL,
+		message      TEXT NOT NULL,
+		created_at   TEXT NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS commits_uri ON commits(uri)`,
+	// refs maps a branch name to its tip commit. A branch is just a named pointer.
+	`CREATE TABLE IF NOT EXISTS refs(
+		uri         TEXT NOT NULL,
+		branch      TEXT NOT NULL,
+		commit_hash TEXT NOT NULL,
+		PRIMARY KEY(uri, branch)
+	)`,
 }
+
+// DefaultBranch is the trunk a prompt's history accrues on unless told otherwise.
+const DefaultBranch = "main"
 
 type Prompt struct {
 	URI         string
@@ -41,9 +68,28 @@ var ErrNotFound = errors.New("prompt not found")
 
 type Store struct {
 	db       *sql.DB
+	driver   string
 	version  int
 	putQuery string
 	getQuery string
+}
+
+// rebind converts ?-style placeholders to $1,$2,… for pgx; SQLite uses ? as-is.
+func (s *Store) rebind(q string) string {
+	if s.driver != "pgx" {
+		return q
+	}
+	var b strings.Builder
+	n := 0
+	for _, c := range q {
+		if c == '?' {
+			n++
+			fmt.Fprintf(&b, "$%d", n)
+			continue
+		}
+		b.WriteRune(c)
+	}
+	return b.String()
 }
 
 // Open connects to SQLite (a file path) or PostgreSQL (a postgres:// DSN) and
@@ -62,7 +108,7 @@ func Open(dsn string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	s := &Store{db: db, version: version}
+	s := &Store{db: db, driver: driver, version: version}
 	// ON CONFLICT upsert is valid in both engines; only the placeholders differ.
 	if driver == "pgx" {
 		s.putQuery = `INSERT INTO prompts(uri, template, slots, version_hash) VALUES($1,$2,$3,$4)
@@ -155,6 +201,186 @@ func (s *Store) Put(ctx context.Context, p Prompt) error {
 	p.VersionHash = Hash(p.Template, p.Slots)
 	_, err = s.db.ExecContext(ctx, s.putQuery, p.URI, p.Template, string(slots), p.VersionHash)
 	return err
+}
+
+// Commit is one node in a prompt's history DAG.
+type Commit struct {
+	Hash        string
+	URI         string
+	Template    string
+	Slots       []string
+	VersionHash string
+	Parent      string // "" for the root commit
+	Parent2     string // set only on merge commits
+	Author      string
+	Message     string
+	CreatedAt   time.Time
+}
+
+// CommitHash is the commit identity: content plus lineage plus authorship. Two
+// commits with the same content but different parents are distinct nodes, which
+// is what lets history branch and reverts not collide with the original.
+func CommitHash(versionHash, parent, parent2, author, message string) string {
+	h := sha256.New()
+	for _, p := range []string{versionHash, parent, parent2, author, message} {
+		h.Write([]byte(p))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+var ErrBranchNotFound = errors.New("branch not found")
+
+// tip returns the commit hash a branch points at, or ErrBranchNotFound.
+func (s *Store) tip(ctx context.Context, uri, branch string) (string, error) {
+	var h string
+	err := s.db.QueryRowContext(ctx, s.rebind(`SELECT commit_hash FROM refs WHERE uri=? AND branch=?`), uri, branch).Scan(&h)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrBranchNotFound
+	}
+	return h, err
+}
+
+// Commit appends a new version onto branch and advances the branch pointer to it.
+// The branch is created (rooted at this commit) if it does not yet exist. Author
+// and message are the collaboration metadata: who changed what, and why.
+// Returns the new commit hash; committing identical content+meta onto the same
+// tip is idempotent (same hash, pointer unchanged).
+func (s *Store) Commit(ctx context.Context, uri, branch, template string, slots []string, author, message string) (string, error) {
+	parent, err := s.tip(ctx, uri, branch)
+	if err != nil && !errors.Is(err, ErrBranchNotFound) {
+		return "", err
+	}
+	return s.commit(ctx, uri, branch, template, slots, parent, "", author, message)
+}
+
+// commit inserts a commit (with explicit parents) and moves branch to it, in one
+// transaction. Used by both Commit and Merge.
+func (s *Store) commit(ctx context.Context, uri, branch, template string, slots []string, parent, parent2, author, message string) (string, error) {
+	slotsJSON, err := json.Marshal(slots)
+	if err != nil {
+		return "", err
+	}
+	vh := Hash(template, slots)
+	hash := CommitHash(vh, parent, parent2, author, message)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+
+	// INSERT OR IGNORE: re-committing the same node is a no-op, not an error.
+	ins := `INSERT INTO commits(hash,uri,template,slots,version_hash,parent,parent2,author,message,created_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(hash) DO NOTHING`
+	var p, p2 any // NULL, not "", for absent parents
+	if parent != "" {
+		p = parent
+	}
+	if parent2 != "" {
+		p2 = parent2
+	}
+	if _, err := tx.ExecContext(ctx, s.rebind(ins), hash, uri, template, string(slotsJSON), vh, p, p2, author, message, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return "", err
+	}
+	up := `INSERT INTO refs(uri,branch,commit_hash) VALUES(?,?,?)
+		ON CONFLICT(uri,branch) DO UPDATE SET commit_hash=excluded.commit_hash`
+	if _, err := tx.ExecContext(ctx, s.rebind(up), uri, branch, hash); err != nil {
+		return "", err
+	}
+	// The prompts table is the materialized tip of the trunk — the served HEAD.
+	// Keep it in sync whenever a commit (or merge) moves main, in the same tx.
+	if branch == DefaultBranch {
+		if _, err := tx.ExecContext(ctx, s.putQuery, uri, template, string(slotsJSON), vh); err != nil {
+			return "", err
+		}
+	}
+	return hash, tx.Commit()
+}
+
+// Branch creates a new branch pointing at the current tip of from. The new branch
+// shares from's history until they diverge.
+func (s *Store) Branch(ctx context.Context, uri, name, from string) error {
+	src, err := s.tip(ctx, uri, from)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, s.rebind(`INSERT INTO refs(uri,branch,commit_hash) VALUES(?,?,?)`), uri, name, src)
+	return err
+}
+
+// Merge records a merge commit on into, with into's tip as first parent and from's
+// tip as second parent, and advances into. Returns the merge commit hash.
+//
+// ponytail: resolution is "take theirs" — the merge content is from's tip
+// verbatim. That records the graph correctly and lets a semantic diff against
+// the first parent show exactly what the merge pulled in. Add 3-way content
+// auto-merge when divergent edits to the *same* prompt actually need reconciling.
+func (s *Store) Merge(ctx context.Context, uri, into, from, author, message string) (string, error) {
+	dst, err := s.tip(ctx, uri, into)
+	if err != nil {
+		return "", err
+	}
+	srcHash, err := s.tip(ctx, uri, from)
+	if err != nil {
+		return "", err
+	}
+	src, err := s.GetCommit(ctx, srcHash)
+	if err != nil {
+		return "", err
+	}
+	if message == "" {
+		message = fmt.Sprintf("merge %s into %s", from, into)
+	}
+	return s.commit(ctx, uri, into, src.Template, src.Slots, dst, srcHash, author, message)
+}
+
+// GetCommit fetches a single commit by hash.
+func (s *Store) GetCommit(ctx context.Context, hash string) (Commit, error) {
+	return s.scanCommit(s.db.QueryRowContext(ctx, s.rebind(commitCols+` WHERE hash=?`), hash))
+}
+
+// Log walks the first-parent chain from a branch tip back to the root — the
+// mainline history, newest first. (Like `git log --first-parent`; second parents
+// are reachable via GetCommit when you need the full DAG.)
+func (s *Store) Log(ctx context.Context, uri, branch string) ([]Commit, error) {
+	h, err := s.tip(ctx, uri, branch)
+	if err != nil {
+		return nil, err
+	}
+	var out []Commit
+	for h != "" {
+		c, err := s.GetCommit(ctx, h)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+		h = c.Parent
+	}
+	return out, nil
+}
+
+const commitCols = `SELECT hash,uri,template,slots,version_hash,parent,parent2,author,message,created_at FROM commits`
+
+type rowScanner interface{ Scan(...any) error }
+
+func (s *Store) scanCommit(row rowScanner) (Commit, error) {
+	var c Commit
+	var slots, created string
+	var parent, parent2 sql.NullString
+	err := row.Scan(&c.Hash, &c.URI, &c.Template, &slots, &c.VersionHash, &parent, &parent2, &c.Author, &c.Message, &created)
+	if errors.Is(err, sql.ErrNoRows) {
+		return c, ErrNotFound
+	}
+	if err != nil {
+		return c, err
+	}
+	c.Parent, c.Parent2 = parent.String, parent2.String
+	if err := json.Unmarshal([]byte(slots), &c.Slots); err != nil {
+		return c, err
+	}
+	c.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+	return c, nil
 }
 
 func (s *Store) Get(ctx context.Context, uri string) (Prompt, error) {

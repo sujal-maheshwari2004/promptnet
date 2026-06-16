@@ -16,6 +16,60 @@ service PromptService {
   // notifies subscribers over NATS. This is the write-through path that makes a
   // repo a publisher (Phase 4).
   rpc PublishPrompt(PublishPromptRequest) returns (PublishPromptResponse);
+
+  // History returns a prompt branch's commit log, newest first (first-parent).
+  rpc History(HistoryRequest) returns (HistoryResponse);
+  // CreateBranch forks a new branch from an existing one's tip.
+  rpc CreateBranch(CreateBranchRequest) returns (CreateBranchResponse);
+  // MergeBranch merges `from` into `into`, recording a two-parent merge commit.
+  rpc MergeBranch(MergeBranchRequest) returns (MergeBranchResponse);
+  // DiffCommits runs the semantic diff between any two commits of a prompt — the
+  // query-anything-in-history path.
+  rpc DiffCommits(DiffCommitsRequest) returns (DiffPromptResponse);
+}
+
+// Commit is one node in a prompt's history DAG.
+message Commit {
+  string hash = 1;
+  string version_hash = 2;
+  string parent = 3;
+  string parent2 = 4; // set only on merge commits
+  string author = 5;
+  string message = 6;
+  string created_at = 7; // RFC3339
+}
+
+message HistoryRequest {
+  string uri = 1;
+  string branch = 2; // empty = "main"
+}
+message HistoryResponse {
+  repeated Commit commits = 1;
+}
+
+message CreateBranchRequest {
+  string uri = 1;
+  string name = 2; // new branch
+  string from = 3; // source branch; empty = "main"
+}
+message CreateBranchResponse {
+  string commit_hash = 1; // tip the new branch points at
+}
+
+message MergeBranchRequest {
+  string uri = 1;
+  string into = 2; // empty = "main"
+  string from = 3;
+  string message = 4;
+}
+message MergeBranchResponse {
+  string commit_hash = 1; // the merge commit
+}
+
+message DiffCommitsRequest {
+  string uri = 1;
+  string from_hash = 2; // the original
+  string to_hash = 3;   // the edit
 }
 
 message GetPromptRequest {
@@ -35,6 +89,8 @@ message PublishPromptRequest {
   string uri = 1;
   string template = 2;
   repeated string slots = 3;
+  string message = 4; // optional commit message
+  string branch = 5;  // target branch; empty = "main" (the served HEAD)
 }
 
 message PublishPromptResponse {

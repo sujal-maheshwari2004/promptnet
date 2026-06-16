@@ -65,6 +65,44 @@ func TestPublishThenGet(t *testing.T) {
 	}
 }
 
+// Exercises the collaboration loop over the wire: commit to main, branch off,
+// commit on the branch (invisible to GetPrompt), then merge to promote it.
+func TestBranchPublishMerge(t *testing.T) {
+	s, _ := newTestServer(t)
+	ctx := context.Background()
+	const uri = "promptnet://o/r/p"
+
+	if _, err := s.PublishPrompt(ctx, &pb.PublishPromptRequest{Uri: uri, Template: "v1 {x}", Slots: []string{"x"}, Message: "init"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateBranch(ctx, &pb.CreateBranchRequest{Uri: uri, Name: "feature"}); err != nil {
+		t.Fatal(err)
+	}
+	// Commit on the branch — the served HEAD must NOT change.
+	if _, err := s.PublishPrompt(ctx, &pb.PublishPromptRequest{Uri: uri, Template: "v2 {x}", Slots: []string{"x"}, Branch: "feature", Message: "wip"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.GetPrompt(ctx, &pb.GetPromptRequest{Uri: uri}); got.GetTemplate() != "v1 {x}" {
+		t.Fatalf("branch publish leaked to main: %q", got.GetTemplate())
+	}
+
+	// Merge promotes the branch content to the served HEAD.
+	if _, err := s.MergeBranch(ctx, &pb.MergeBranchRequest{Uri: uri, From: "feature", Message: "ship"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.GetPrompt(ctx, &pb.GetPromptRequest{Uri: uri}); got.GetTemplate() != "v2 {x}" {
+		t.Fatalf("merge did not update served HEAD: %q", got.GetTemplate())
+	}
+	// main history: merge, init (first-parent) — the merge's content came from the branch.
+	hist, err := s.History(ctx, &pb.HistoryRequest{Uri: uri})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hist.GetCommits()) != 2 || hist.GetCommits()[0].GetParent2() == "" {
+		t.Fatalf("history = %d commits, tip parent2=%q (want 2, merge tip)", len(hist.GetCommits()), hist.GetCommits()[0].GetParent2())
+	}
+}
+
 func TestPublishInvalidRejected(t *testing.T) {
 	s, _ := newTestServer(t)
 	// Template uses {org} but it isn't declared -> validation must reject.

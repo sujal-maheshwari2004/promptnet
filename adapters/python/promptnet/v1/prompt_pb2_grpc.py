@@ -31,6 +31,26 @@ class PromptServiceStub:
                 request_serializer=promptnet_dot_v1_dot_prompt__pb2.PublishPromptRequest.SerializeToString,
                 response_deserializer=promptnet_dot_v1_dot_prompt__pb2.PublishPromptResponse.FromString,
                 _registered_method=True)
+        self.History = channel.unary_unary(
+                '/promptnet.v1.PromptService/History',
+                request_serializer=promptnet_dot_v1_dot_prompt__pb2.HistoryRequest.SerializeToString,
+                response_deserializer=promptnet_dot_v1_dot_prompt__pb2.HistoryResponse.FromString,
+                _registered_method=True)
+        self.CreateBranch = channel.unary_unary(
+                '/promptnet.v1.PromptService/CreateBranch',
+                request_serializer=promptnet_dot_v1_dot_prompt__pb2.CreateBranchRequest.SerializeToString,
+                response_deserializer=promptnet_dot_v1_dot_prompt__pb2.CreateBranchResponse.FromString,
+                _registered_method=True)
+        self.MergeBranch = channel.unary_unary(
+                '/promptnet.v1.PromptService/MergeBranch',
+                request_serializer=promptnet_dot_v1_dot_prompt__pb2.MergeBranchRequest.SerializeToString,
+                response_deserializer=promptnet_dot_v1_dot_prompt__pb2.MergeBranchResponse.FromString,
+                _registered_method=True)
+        self.DiffCommits = channel.unary_unary(
+                '/promptnet.v1.PromptService/DiffCommits',
+                request_serializer=promptnet_dot_v1_dot_prompt__pb2.DiffCommitsRequest.SerializeToString,
+                response_deserializer=promptnet_dot_v1_dot_prompt__pb2.DiffPromptResponse.FromString,
+                _registered_method=True)
 
 
 class PromptServiceServicer:
@@ -62,6 +82,35 @@ class PromptServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def History(self, request, context):
+        """History returns a prompt branch's commit log, newest first (first-parent).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CreateBranch(self, request, context):
+        """CreateBranch forks a new branch from an existing one's tip.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def MergeBranch(self, request, context):
+        """MergeBranch merges `from` into `into`, recording a two-parent merge commit.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DiffCommits(self, request, context):
+        """DiffCommits runs the semantic diff between any two commits of a prompt — the
+        query-anything-in-history path.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_PromptServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -79,6 +128,26 @@ def add_PromptServiceServicer_to_server(servicer, server):
                     servicer.PublishPrompt,
                     request_deserializer=promptnet_dot_v1_dot_prompt__pb2.PublishPromptRequest.FromString,
                     response_serializer=promptnet_dot_v1_dot_prompt__pb2.PublishPromptResponse.SerializeToString,
+            ),
+            'History': grpc.unary_unary_rpc_method_handler(
+                    servicer.History,
+                    request_deserializer=promptnet_dot_v1_dot_prompt__pb2.HistoryRequest.FromString,
+                    response_serializer=promptnet_dot_v1_dot_prompt__pb2.HistoryResponse.SerializeToString,
+            ),
+            'CreateBranch': grpc.unary_unary_rpc_method_handler(
+                    servicer.CreateBranch,
+                    request_deserializer=promptnet_dot_v1_dot_prompt__pb2.CreateBranchRequest.FromString,
+                    response_serializer=promptnet_dot_v1_dot_prompt__pb2.CreateBranchResponse.SerializeToString,
+            ),
+            'MergeBranch': grpc.unary_unary_rpc_method_handler(
+                    servicer.MergeBranch,
+                    request_deserializer=promptnet_dot_v1_dot_prompt__pb2.MergeBranchRequest.FromString,
+                    response_serializer=promptnet_dot_v1_dot_prompt__pb2.MergeBranchResponse.SerializeToString,
+            ),
+            'DiffCommits': grpc.unary_unary_rpc_method_handler(
+                    servicer.DiffCommits,
+                    request_deserializer=promptnet_dot_v1_dot_prompt__pb2.DiffCommitsRequest.FromString,
+                    response_serializer=promptnet_dot_v1_dot_prompt__pb2.DiffPromptResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -164,6 +233,114 @@ class PromptService:
             '/promptnet.v1.PromptService/PublishPrompt',
             promptnet_dot_v1_dot_prompt__pb2.PublishPromptRequest.SerializeToString,
             promptnet_dot_v1_dot_prompt__pb2.PublishPromptResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def History(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/promptnet.v1.PromptService/History',
+            promptnet_dot_v1_dot_prompt__pb2.HistoryRequest.SerializeToString,
+            promptnet_dot_v1_dot_prompt__pb2.HistoryResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CreateBranch(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/promptnet.v1.PromptService/CreateBranch',
+            promptnet_dot_v1_dot_prompt__pb2.CreateBranchRequest.SerializeToString,
+            promptnet_dot_v1_dot_prompt__pb2.CreateBranchResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def MergeBranch(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/promptnet.v1.PromptService/MergeBranch',
+            promptnet_dot_v1_dot_prompt__pb2.MergeBranchRequest.SerializeToString,
+            promptnet_dot_v1_dot_prompt__pb2.MergeBranchResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DiffCommits(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/promptnet.v1.PromptService/DiffCommits',
+            promptnet_dot_v1_dot_prompt__pb2.DiffCommitsRequest.SerializeToString,
+            promptnet_dot_v1_dot_prompt__pb2.DiffPromptResponse.FromString,
             options,
             channel_credentials,
             insecure,

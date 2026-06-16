@@ -48,23 +48,35 @@ func (s *Server) PublishPrompt(ctx context.Context, req *pb.PublishPromptRequest
 		return nil, status.Errorf(codes.InvalidArgument, "invalid prompt: %v", err)
 	}
 	hash := store.Hash(req.GetTemplate(), req.GetSlots())
+	branch := branchOr(req.GetBranch())
+	onMain := branch == store.DefaultBranch
 
-	// Idempotent: republishing the same content is a no-op — no write, no notify.
-	// This lets `promptctl push` publish every prompt and only changed ones fire.
-	if prev, err := s.Store.Get(ctx, req.GetUri()); err == nil && prev.VersionHash == hash {
-		return &pb.PublishPromptResponse{VersionHash: hash}, nil
+	// Idempotent on main: republishing the served HEAD's content is a no-op — no
+	// write, no notify. Lets `promptctl push` publish every prompt; only changed
+	// ones fire. (Branch publishes rely on commit-level idempotency instead.)
+	if onMain {
+		if prev, err := s.Store.Get(ctx, req.GetUri()); err == nil && prev.VersionHash == hash {
+			return &pb.PublishPromptResponse{VersionHash: hash}, nil
+		}
 	}
 
-	if err := s.Store.Put(ctx, store.Prompt{URI: req.GetUri(), Template: req.GetTemplate(), Slots: req.GetSlots()}); err != nil {
+	// Commit on the target branch. On main this also materializes the served HEAD
+	// (the prompts table) in the same transaction. Author is the caller's org
+	// scope; message is carried from the request.
+	if _, err := s.Store.Commit(ctx, req.GetUri(), branch, req.GetTemplate(), req.GetSlots(), scopeOf(ctx), req.GetMessage()); err != nil {
 		return nil, status.Errorf(codes.Internal, "store failed: %v", err)
 	}
-	if s.Cache != nil {
-		s.Cache.Invalidate(req.GetUri())
-	}
-	if s.Notifier != nil {
-		// Best-effort: the version is durably stored even if the notify fails;
-		// subscribers still converge on the next TTL poll.
-		_ = s.Notifier.Publish(req.GetUri(), hash)
+	// Cache and subscribers track the served HEAD only — branch work is invisible
+	// until merged into main.
+	if onMain {
+		if s.Cache != nil {
+			s.Cache.Invalidate(req.GetUri())
+		}
+		if s.Notifier != nil {
+			// Best-effort: the version is durably stored even if the notify fails;
+			// subscribers still converge on the next TTL poll.
+			_ = s.Notifier.Publish(req.GetUri(), hash)
+		}
 	}
 	return &pb.PublishPromptResponse{VersionHash: hash}, nil
 }
@@ -116,7 +128,100 @@ func (s *Server) DiffPrompt(ctx context.Context, req *pb.DiffPromptRequest) (*pb
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "lookup failed: %v", err)
 	}
-	results, err := semdiff.Analyze(s.Embedder, splitLines(p.Template), splitLines(req.GetNewTemplate()))
+	return s.diff(p.Template, req.GetNewTemplate())
+}
+
+// branchOr returns b, or DefaultBranch when b is empty.
+func branchOr(b string) string {
+	if b == "" {
+		return store.DefaultBranch
+	}
+	return b
+}
+
+func branchErr(err error) error {
+	if errors.Is(err, store.ErrBranchNotFound) {
+		return status.Error(codes.NotFound, "branch not found")
+	}
+	return status.Errorf(codes.Internal, "%v", err)
+}
+
+func (s *Server) History(ctx context.Context, req *pb.HistoryRequest) (*pb.HistoryResponse, error) {
+	if err := authorize(ctx, req.GetUri()); err != nil {
+		return nil, err
+	}
+	log, err := s.Store.Log(ctx, req.GetUri(), branchOr(req.GetBranch()))
+	if err != nil {
+		return nil, branchErr(err)
+	}
+	out := make([]*pb.Commit, len(log))
+	for i, c := range log {
+		out[i] = &pb.Commit{
+			Hash: c.Hash, VersionHash: c.VersionHash, Parent: c.Parent, Parent2: c.Parent2,
+			Author: c.Author, Message: c.Message, CreatedAt: c.CreatedAt.Format(time.RFC3339Nano),
+		}
+	}
+	return &pb.HistoryResponse{Commits: out}, nil
+}
+
+func (s *Server) CreateBranch(ctx context.Context, req *pb.CreateBranchRequest) (*pb.CreateBranchResponse, error) {
+	if err := authorize(ctx, req.GetUri()); err != nil {
+		return nil, err
+	}
+	if req.GetName() == "" {
+		return nil, status.Error(codes.InvalidArgument, "branch name required")
+	}
+	if err := s.Store.Branch(ctx, req.GetUri(), req.GetName(), branchOr(req.GetFrom())); err != nil {
+		return nil, branchErr(err)
+	}
+	c, err := s.Store.Log(ctx, req.GetUri(), req.GetName())
+	if err != nil {
+		return nil, branchErr(err)
+	}
+	return &pb.CreateBranchResponse{CommitHash: c[0].Hash}, nil
+}
+
+func (s *Server) MergeBranch(ctx context.Context, req *pb.MergeBranchRequest) (*pb.MergeBranchResponse, error) {
+	if err := authorize(ctx, req.GetUri()); err != nil {
+		return nil, err
+	}
+	hash, err := s.Store.Merge(ctx, req.GetUri(), branchOr(req.GetInto()), req.GetFrom(), scopeOf(ctx), req.GetMessage())
+	if err != nil {
+		return nil, branchErr(err)
+	}
+	// Merging into main moves the served HEAD — invalidate its cache.
+	if s.Cache != nil && branchOr(req.GetInto()) == store.DefaultBranch {
+		s.Cache.Invalidate(req.GetUri())
+	}
+	return &pb.MergeBranchResponse{CommitHash: hash}, nil
+}
+
+func (s *Server) DiffCommits(ctx context.Context, req *pb.DiffCommitsRequest) (*pb.DiffPromptResponse, error) {
+	if err := authorize(ctx, req.GetUri()); err != nil {
+		return nil, err
+	}
+	from, err := s.Store.GetCommit(ctx, req.GetFromHash())
+	if err != nil {
+		return nil, diffCommitErr(err)
+	}
+	to, err := s.Store.GetCommit(ctx, req.GetToHash())
+	if err != nil {
+		return nil, diffCommitErr(err)
+	}
+	return s.diff(from.Template, to.Template)
+}
+
+func diffCommitErr(err error) error {
+	if errors.Is(err, store.ErrNotFound) {
+		return status.Error(codes.NotFound, "commit not found")
+	}
+	return status.Errorf(codes.Internal, "%v", err)
+}
+
+// diff runs the semantic propagation diff between two templates and maps it to
+// the wire type. Shared by DiffPrompt and DiffCommits.
+func (s *Server) diff(oldT, newT string) (*pb.DiffPromptResponse, error) {
+	results, err := semdiff.Analyze(s.Embedder, splitLines(oldT), splitLines(newT))
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "diff failed: %v", err)
 	}
@@ -199,6 +304,15 @@ func AuthInterceptor(tokens map[string]Token) grpc.UnaryServerInterceptor {
 		}
 		return handler(context.WithValue(ctx, scopeKey{}, org), req)
 	}
+}
+
+// scopeOf returns the caller's org scope as the commit author, "anonymous" when
+// auth is disabled (no scope on the context).
+func scopeOf(ctx context.Context) string {
+	if scope, _ := ctx.Value(scopeKey{}).(string); scope != "" {
+		return scope
+	}
+	return "anonymous"
 }
 
 // authorize enforces the caller's org scope: a token scoped to org "acme" may
