@@ -588,7 +588,7 @@ any plugins locally. Don't hand-edit generated files — they'll be overwritten.
 
 | Version | Ships | Status |
 | --- | --- | --- |
-| **v0.1** | gRPC server, Python adapter, validation | done |
+| **v0.1** | gRPC server, Python adapter, validation | **this repo** |
 | **v0.2** | L1/L2 caching (TTL), keyed on `version_hash` | **this repo** |
 | **v0.3** | `promptctl` CLI: commit/diff/log/promote/push/pull, go-git versioning | **this repo** |
 | **v0.4** | Pub/sub distribution over embedded NATS, TTL sync, subscriber model | **this repo** |
