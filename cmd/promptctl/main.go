@@ -140,7 +140,9 @@ func logCmd(args []string) {
 }
 
 // promote brings one prompt from the `from` branch onto the `to` branch and
-// commits it there — the dev → staging → prod version promotion.
+// commits it there — the dev → staging → prod version promotion. A no-op (the
+// prompt already matches on `to`) reports "already up to date" instead of failing
+// on an empty commit.
 // ponytail: assumes both branches exist and the tree is clean; go-git errors surface as-is.
 func promote(args []string) {
 	if len(args) != 3 {
@@ -148,17 +150,22 @@ func promote(args []string) {
 	}
 	path, from, to := filepath.ToSlash(args[0]), args[1], args[2]
 	r := openRepo()
-	wt := worktree(r)
 
-	if err := wt.Checkout(&git.CheckoutOptions{Branch: plumbing.NewBranchReferenceName(to)}); err != nil {
-		log.Fatalf("checkout %s: %v", to, err)
-	}
 	content := blobContent(treeAt(r, from), path)
 	if content == "" {
 		log.Fatalf("prompt %q not found on branch %s", path, from)
 	}
+	if content == blobContent(treeAt(r, to), path) {
+		fmt.Printf("already up to date: %s on %s matches %s\n", path, to, from)
+		return
+	}
 	if err := validate.Prompt(pathToURI(path), content, deriveSlots(content)); err != nil {
 		log.Fatalf("refusing to promote invalid prompt: %v", err)
+	}
+
+	wt := worktree(r)
+	if err := wt.Checkout(&git.CheckoutOptions{Branch: plumbing.NewBranchReferenceName(to)}); err != nil {
+		log.Fatalf("checkout %s: %v", to, err)
 	}
 	if err := os.WriteFile(filepath.FromSlash(path), []byte(content), 0o644); err != nil {
 		log.Fatal(err)

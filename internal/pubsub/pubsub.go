@@ -63,3 +63,24 @@ func (b *Bus) Close() {
 	b.nc.Drain()
 	b.ns.Shutdown()
 }
+
+// Subscriber is the pull-side counterpart to Bus: an agent connects to the NATS
+// port the server exposes and gets a callback whenever a prompt it uses changes.
+// It hides the subject mapping so embedders never hand-roll NATS subjects.
+type Subscriber struct{ nc *nats.Conn }
+
+// Connect dials a NATS server, e.g. nats://127.0.0.1:4222.
+func Connect(url string) (*Subscriber, error) {
+	nc, err := nats.Connect(url)
+	if err != nil {
+		return nil, err
+	}
+	return &Subscriber{nc: nc}, nil
+}
+
+// Subscribe calls fn(versionHash) on every version change of the prompt at uri.
+func (s *Subscriber) Subscribe(uri string, fn func(versionHash string)) (*nats.Subscription, error) {
+	return s.nc.Subscribe(Subject(uri), func(m *nats.Msg) { fn(string(m.Data)) })
+}
+
+func (s *Subscriber) Close() { s.nc.Drain() }

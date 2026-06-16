@@ -43,8 +43,23 @@ const (
 	flattenEps     = 0.02 // |Δ between successive windows| below this = flattened
 	localThresh    = 0.15 // point delta at/above this is a real behavioral change
 	structMinDelta = 0.15 // a direction must still carry this much at the boundary
-	persistFrac    = 0.60 // …and at least this fraction of the point delta
+	persistFrac    = 0.60 // …and at least this fraction of the point delta (default)
 )
+
+// Calibrated lets an embedder lower the structural persistence bar. The fraction
+// above assumes a semantic embedder, whose meaning shift stays high as the window
+// grows. A lexical bag-of-words distance instead *dilutes* toward zero as shared
+// context enters the window, so a genuine mid-prompt rewrite lands well under 0.60
+// at the boundary and would never read as structural. Such embedders implement
+// this to report a lower fraction; persistFracFor falls back to persistFrac.
+type Calibrated interface{ PersistFrac() float64 }
+
+func persistFracFor(emb Embedder) float64 {
+	if c, ok := emb.(Calibrated); ok {
+		return c.PersistFrac()
+	}
+	return persistFrac
+}
 
 // Embedder maps texts to vectors. Implementations: LexicalEmbedder (offline
 // default) and HTTPEmbedder (any OpenAI-compatible endpoint).
@@ -80,9 +95,10 @@ type Result struct {
 // Analyze runs the full propagation diff over two versions of a prompt.
 func Analyze(emb Embedder, oldLines, newLines []string) ([]Result, error) {
 	cache := map[string][]float32{} // text -> vector, reused across windows
+	pf := persistFracFor(emb)
 	var out []Result
 	for _, ch := range changes(oldLines, newLines) {
-		r, err := analyzeChange(emb, oldLines, newLines, ch, cache)
+		r, err := analyzeChange(emb, oldLines, newLines, ch, cache, pf)
 		if err != nil {
 			return nil, err
 		}
@@ -91,7 +107,7 @@ func Analyze(emb Embedder, oldLines, newLines []string) ([]Result, error) {
 	return out, nil
 }
 
-func analyzeChange(emb Embedder, old, new []string, ch Change, cache map[string][]float32) (Result, error) {
+func analyzeChange(emb Embedder, old, new []string, ch Change, cache map[string][]float32, pf float64) (Result, error) {
 	core := func() (string, string) {
 		return join(old[ch.OldStart:ch.OldEnd]), join(new[ch.NewStart:ch.NewEnd])
 	}
@@ -118,7 +134,7 @@ func analyzeChange(emb Embedder, old, new []string, ch Change, cache map[string]
 		return Result{}, err
 	}
 
-	return Result{Change: ch, Signal2: s2, Up: up, Down: down, Class: classify(s2, up, down)}, nil
+	return Result{Change: ch, Signal2: s2, Up: up, Down: down, Class: classify(s2, up, down, pf)}, nil
 }
 
 // window returns (oldText, newText, atBoundary) for a given radius.
@@ -145,13 +161,13 @@ func expand(s2 float64, w window, emb Embedder, cache map[string][]float32) (Dir
 	}
 }
 
-func classify(s2 float64, up, down Direction) string {
+func classify(s2 float64, up, down Direction, pf float64) string {
 	persists := func(d Direction) bool {
 		if !d.StoppedAtBoundary || len(d.Curve) == 0 {
 			return false
 		}
 		last := d.Curve[len(d.Curve)-1].Delta
-		return last >= structMinDelta && last >= s2*persistFrac
+		return last >= structMinDelta && last >= s2*pf
 	}
 	if persists(up) || persists(down) {
 		return "structural"
@@ -260,6 +276,13 @@ func join(lines []string) string { return strings.Join(lines, "\n") }
 // scores 0 and rewordings score low, which is enough to exercise and demo the
 // propagation mechanics. For real semantic quality, use HTTPEmbedder.
 type LexicalEmbedder struct{ Dim int }
+
+// PersistFrac lowers the structural bar for the offline embedder. Bag-of-words
+// distance dilutes as the window grows into shared context: a real mid-prompt
+// rewrite survives the boundary at ~0.43 of the point delta, an isolated tweak at
+// ~0.37. 0.40 splits them where the default 0.60 cannot. ponytail: the margin is
+// thin (it's a toy embedder) — for robust separation use HTTPEmbedder.
+func (LexicalEmbedder) PersistFrac() float64 { return 0.40 }
 
 func (e LexicalEmbedder) Embed(texts []string) ([][]float32, error) {
 	d := e.Dim

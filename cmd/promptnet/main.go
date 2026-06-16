@@ -22,6 +22,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -52,6 +54,8 @@ func main() {
 		diff(os.Args[2:])
 	case "publish":
 		publish(os.Args[2:])
+	case "watch":
+		watch(os.Args[2:])
 	case "backup":
 		backup(os.Args[2:])
 	case "restore":
@@ -66,7 +70,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: promptnet serve|put|diff|publish|backup|restore|migrate|gen-token [flags]")
+	fmt.Fprintln(os.Stderr, "usage: promptnet serve|put|diff|publish|watch|backup|restore|migrate|gen-token [flags]")
 	os.Exit(2)
 }
 
@@ -401,6 +405,52 @@ func publish(args []string) {
 		log.Fatal(err)
 	}
 	fmt.Printf("published %s (%s) — subscribers notified\n", *uri, resp.GetVersionHash()[:12])
+}
+
+// watch subscribes to a prompt's version-change events — the push side an agent
+// uses to learn the prompt it runs was updated. It prints each change; with -exec
+// it also runs a command (POSIX sh -c) with the new hash in $PROMPTNET_VERSION,
+// so it works as a sidecar that reloads or redeploys on prompt updates.
+func watch(args []string) {
+	fs := flag.NewFlagSet("watch", flag.ExitOnError)
+	uri := fs.String("uri", "", "prompt uri to watch")
+	natsURL := fs.String("nats-url", "nats://127.0.0.1:4222", "NATS url the server exposes")
+	hook := fs.String("exec", "", "command to run on each change (via OS shell); new hash in PROMPTNET_VERSION env")
+	fs.Parse(args)
+	if *uri == "" {
+		log.Fatal("usage: promptnet watch -uri promptnet://... [-nats-url nats://host:4222] [-exec CMD]")
+	}
+	sub, err := pubsub.Connect(*natsURL)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer sub.Close()
+	if _, err := sub.Subscribe(*uri, func(hash string) {
+		log.Printf("%s updated -> %s", *uri, hash)
+		if *hook != "" {
+			runHook(*hook, *uri, hash)
+		}
+	}); err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("watching %s on %s", *uri, *natsURL)
+	select {} // block forever; Ctrl-C to stop
+}
+
+// runHook runs the -exec command with the changed prompt's uri/hash in the env,
+// through the platform's shell (sh on unix, cmd on Windows).
+func runHook(cmd, uri, hash string) {
+	var c *exec.Cmd
+	if runtime.GOOS == "windows" {
+		c = exec.Command("cmd", "/c", cmd)
+	} else {
+		c = exec.Command("sh", "-c", cmd)
+	}
+	c.Env = append(os.Environ(), "PROMPTNET_URI="+uri, "PROMPTNET_VERSION="+hash)
+	c.Stdout, c.Stderr = os.Stdout, os.Stderr
+	if err := c.Run(); err != nil {
+		log.Printf("exec hook failed: %v", err)
+	}
 }
 
 // backup writes every stored prompt to -out as JSON lines (one prompt per
