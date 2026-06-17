@@ -1,102 +1,95 @@
-# PromptNet — Phases 1–4 (Transport, Serving, Caching, Versioning & Distribution)
+# PromptNet
 
-PromptNet is a self-hostable, language-agnostic system for serving prompts to AI
-agents over a network — the way a Git server serves repositories. You run the
-server, your prompts live in your infrastructure, and your agents fetch them by
-URI over gRPC.
+PromptNet is a self-hostable, language-agnostic server for versioning and serving
+prompts to AI agents over a network — the way a Git server serves repositories.
+You run the server, your prompts live in your infrastructure, and your agents
+fetch them by URI over gRPC.
 
-This repository covers **Phases 1–4**: a single Go server binary that **stores**,
-**validates**, **serves**, **caches**, and **distributes** prompts over embedded
-NATS pub/sub; a **Python client** for agents to fetch and subscribe; and
-**`promptctl`**, a git-backed authoring CLI with a semantic propagation diff.
+It is a single Go binary that stores, validates, serves, versions, caches, and
+distributes prompts, plus a Python and a JavaScript client, and `promptctl`, a
+git-backed authoring CLI with a semantic diff.
 
----
+Two pieces are new here, and the rest of the system exists to serve them:
 
-## Table of contents
+- **The Semantic Propagation Diff** — a diff that measures *how far an edit's
+  meaning shift ripples* through a prompt, separating a safe local tweak from a
+  structural rewrite. A text diff cannot express this. See
+  [Semantic Propagation Diff](#semantic-propagation-diff).
+- **Change distribution to agents** — prompts are not static files an agent reads
+  once; they are live, versioned resources, and the server pushes a notification
+  to every subscribed agent the instant one changes. See
+  [Pub/sub distribution](#pubsub-distribution).
 
-- [What it does](#what-it-does)
-- [Why these choices](#why-these-choices)
-- [Concepts](#concepts)
-- [Toolchain](#toolchain)
-- [Build](#build)
+Everything else — gRPC transport, the commit DAG, caching, auth — is in service
+of getting those two capabilities to production safely.
+
+## Contents
+
+- [Overview](#overview)
+- [Installation](#installation)
 - [Quick start](#quick-start)
-- [Using the Python client](#using-the-python-client)
-- [How the code is organized](#how-the-code-is-organized)
-- [The wire protocol](#the-wire-protocol)
-- [Validation rules](#validation-rules)
+- [Concepts](#concepts)
+- [Versioning: commits, branches, and merges](#versioning-commits-branches-and-merges)
+- [gRPC API](#grpc-api)
+- [`promptnet` CLI](#promptnet-cli)
+- [Client libraries](#client-libraries)
+- [Validation](#validation)
 - [Authentication & TLS](#authentication--tls)
-- [Storage & version hashing](#storage--version-hashing)
+- [Storage](#storage)
+- [Caching](#caching)
+- [Semantic Propagation Diff](#semantic-propagation-diff)
+- [Authoring with `promptctl`](#authoring-with-promptctl)
+- [Pub/sub distribution](#pubsub-distribution)
 - [Observability & rate limiting](#observability--rate-limiting)
+- [Configuration reference](#configuration-reference)
 - [Regenerating code from the proto](#regenerating-code-from-the-proto)
-- [Roadmap](#roadmap)
+- [Project layout](#project-layout)
+- [Release history](#release-history)
 
----
+## Overview
 
-## What it does
-
-1. **Store a prompt** — you write a prompt template and declare its slots
-   (variables), then run `promptnet put`. The prompt is validated and saved to a
-   local SQLite database.
-2. **Serve it** — `promptnet serve` starts a gRPC server. Agents call
-   `GetPrompt(uri)` and get back the template, its slots, and a content hash.
-3. **Keep it correct** — every prompt is validated at write time *and* again at
-   serve time, so a broken prompt can never reach an agent.
-
-A "prompt" here is a small record:
+A prompt is a small versioned record:
 
 | Field | Example | Meaning |
 | --- | --- | --- |
 | `uri` | `promptnet://acme/onboarding/welcome` | unique address of the prompt |
 | `template` | `Hi {name}, welcome to {org}!` | the text, with `{slot}` placeholders |
 | `slots` | `["name", "org"]` | the variables the template expects |
-| `version_hash` | `80ec4e4d...` | sha256 of template+slots; changes when content changes |
+| `version_hash` | `80ec4e4d…` | sha256 of template + slots; changes when content changes |
 
-The agent fetches the template and fills in the slots itself.
+Agents fetch the template and fill in the slots themselves. Every prompt is
+validated both when written and when served, so a malformed prompt can never
+reach an agent.
 
----
+The server provides:
 
-## Why these choices
+- **Versioning** — each change is a commit in a per-prompt history DAG, with
+  branches, merges, and a content hash. See
+  [Versioning](#versioning-commits-branches-and-merges).
+- **Serving** — agents call `GetPrompt(uri)` over gRPC and receive the template,
+  slots, and version hash.
+- **Semantic diff** — a propagation diff that measures how far an edit's meaning
+  shift ripples through a prompt, distinguishing a local tweak from a structural
+  rewrite. See [Semantic Propagation Diff](#semantic-propagation-diff).
+- **Caching** — opt-in client- and server-side caches keyed by URI, with an
+  optional shared Redis backend.
+- **Distribution** — an embedded NATS server notifies subscribers when a prompt
+  changes.
+- **Operations** — token auth with org scoping and expiry, TLS/mTLS, Prometheus
+  metrics, audit logs, per-org rate limiting, backup/restore, and schema
+  migrations.
 
-- **gRPC** for transport — strongly typed, fast, with TLS and auth built in. The
-  `.proto` file is the single source of truth; both Go and Python clients are
-  generated from it, so they can never disagree about the message format.
-- **SQLite (pure-Go driver)** for storage — gives real ACID guarantees (a write
-  fully succeeds or fully fails) with **zero external dependencies**. The whole
-  server is one binary you can copy and run.
-- **Validation at every layer** — the same check runs on write and on read.
-  A prompt that fails it never enters a valid state.
-- **No novel algorithms** — it's gRPC + SQLite + a small validator. The value is
-  in the combination and the self-hostability, not in clever code.
+## Installation
 
----
+Requirements:
 
-## Concepts
+- **Go** 1.25+ — <https://go.dev/dl/>
+- **buf** — <https://buf.build/docs/installation> — the only proto tool needed;
+  it uses remote plugins, so no `protoc` or plugin installs.
+- **Python** 3.13 + `pip install grpcio "protobuf>=7.35"` — only for the Python
+  client (buf's remote plugin emits recent protobuf gencode).
 
-- **URI** — every prompt has a unique address: `promptnet://org/repo/name`. It is
-  stored and looked up as a plain string; nothing parses the parts in Phase 1.
-- **Slot** — a `{name}` placeholder in the template. Slots must be declared when
-  you store a prompt, and the declared set must exactly match what the template
-  uses (see [Validation rules](#validation-rules)).
-- **Version hash** — a sha256 over the template and slots. Identical content
-  always produces the same hash; any change produces a new one. Phase 2 will use
-  it as a cache key, so cache invalidation is automatic.
-
----
-
-## Toolchain
-
-Phase 1 needs:
-
-- **Go** 1.23+ — <https://go.dev/dl/>
-- **buf** — <https://buf.build/docs/installation>
-  (this is the only proto tool you need; no `protoc` or plugin installs — `buf`
-  uses remote plugins)
-- **Python** 3.13 + `pip install grpcio "protobuf>=7.35"` — only for the adapter
-  (buf's remote plugin emits recent protobuf gencode; an older runtime errors out)
-
----
-
-## Build
+Build:
 
 ```sh
 make build        # buf generate + go build -> ./promptnet(.exe)
@@ -106,12 +99,16 @@ make test         # go test ./...
 Or by hand:
 
 ```sh
-buf generate                                   # proto -> Go + Python stubs
-go build -o promptnet ./cmd/promptnet          # build the binary
-go test ./...                                  # run tests
+buf generate                            # proto -> Go + Python stubs
+go build -o promptnet ./cmd/promptnet   # build the binary
+go test ./...                           # run tests
 ```
 
----
+Run with Docker instead:
+
+```sh
+docker compose up        # builds and serves on :8443 (gRPC), :2112 (metrics), :4222 (NATS)
+```
 
 ## Quick start
 
@@ -119,7 +116,7 @@ go test ./...                                  # run tests
 # 1. write a template
 echo "Hi {name}, welcome to {org}!" > welcome.txt
 
-# 2. store it (declares the two slots; validation runs here)
+# 2. store it locally (declares the two slots; validation runs here)
 ./promptnet put -uri promptnet://acme/onboarding/welcome \
   -file welcome.txt -slot name -slot org
 # -> stored promptnet://acme/onboarding/welcome (80ec4e4d88e6)
@@ -128,43 +125,168 @@ echo "Hi {name}, welcome to {org}!" > welcome.txt
 PROMPTNET_TOKEN=secret ./promptnet serve -addr :8443
 ```
 
-If `put` overwrites an existing prompt, it first runs the
-[Semantic Propagation Diff](#semantic-propagation-diff-phase-3) between the stored
-version and your edit, prints the report, and **refuses a structural change**
-unless you pass `-force`:
+Fetch it from an agent (Python):
 
-```sh
-./promptnet put -uri promptnet://x/y/z -file edited.txt
-#   ... => structural
-# structural change detected; re-run with -force to store   (exit 1)
+```python
+from promptnet import PromptClient
+
+client = PromptClient(host="localhost:8443", token="secret")
+prompt = client.get("promptnet://acme/onboarding/welcome")
+text = prompt.template.format(name="Sujal", org="Acme")
 ```
 
-This uses the same `PROMPTNET_EMBED_*` model config as the server (offline
-lexical by default).
-
-`put` flags: `-uri`, `-file` (`-` for stdin), `-slot` (repeatable), `-db`,
-`-force`, `-embed-url`, `-embed-model`.
-`serve` flags: `-addr`, `-db`, `-tls-cert`, `-tls-key`, `-client-ca` (mTLS),
-`-tokens-file`, `-metrics-addr`, `-rate-limit`, `-rate-burst`, plus the cache /
-embed / nats flags below. Auth token comes from the `PROMPTNET_TOKEN` env var.
-Other subcommands: `backup`, `restore`, `migrate`, `gen-token` (see below).
-
-Trying to store a prompt whose template and slots disagree fails loudly and
-writes nothing:
+Storing a prompt whose template and slots disagree fails and writes nothing:
 
 ```sh
 ./promptnet put -uri promptnet://acme/bad/x -file welcome.txt -slot name
 # -> validation failed: template uses undeclared slots: org   (exit 1)
 ```
 
----
+## Concepts
 
-## Using the Python client
+- **URI** — every prompt has a unique address: `promptnet://org/repo/name`. It is
+  stored and looked up as a plain string. The first path segment is the **org**,
+  used for auth scoping.
+- **Slot** — a `{name}` placeholder in the template. Declared slots must exactly
+  match the placeholders the template uses (see [Validation](#validation)).
+- **Version hash** — a sha256 over template and slots. Identical content always
+  produces the same hash; it is the cache key and the content identity of a
+  version.
+- **Commit** — one node in a prompt's history, content-addressed and pointing at
+  its parent(s). Carries author, message, and timestamp.
+- **Branch / ref** — a named pointer to a commit. `main` is the trunk and the
+  served version. Other branches are work in progress until merged.
+
+## Versioning: commits, branches, and merges
+
+Each prompt has its own history DAG. Publishing a change appends a commit; the
+`main` branch is the **served HEAD** — what `GetPrompt` returns. Branches let you
+develop a change in isolation; merging promotes it to `main`.
+
+```text
+main:    A ─────────── M   (M = merge commit, served HEAD)
+                ╲      ╱
+feature:         B ── C     (published to the branch, invisible to GetPrompt)
+```
+
+A commit's identity includes its content **and** its lineage, so reverting to old
+content produces a new commit rather than colliding with the original.
+
+Typical flow over the API:
+
+```sh
+# publish onto main (default) — moves the served HEAD, notifies subscribers
+promptnet publish -uri promptnet://acme/support/agent -file v1.txt -slot name
+
+# (via a gRPC client) branch, publish onto the branch, then merge back:
+#   CreateBranch  uri, name="feature", from="main"
+#   PublishPrompt uri, template=…, branch="feature"   # served HEAD unchanged
+#   MergeBranch   uri, into="main", from="feature"     # served HEAD now = feature content
+#   History       uri, branch="main"                   # the commit log, newest first
+#   DiffCommits   uri, from_hash, to_hash              # semantic diff of any two commits
+```
+
+Behavior notes:
+
+- **Publishing to a non-`main` branch** records a commit but does not change the
+  served HEAD, invalidate the cache, or notify subscribers — branch work is
+  invisible until merged.
+- **Merging** records a two-parent merge commit on the target branch. Merge
+  content is taken from the source branch ("take theirs"); the merge then shows
+  up as a diff against the first parent. Three-way content auto-merge is not yet
+  implemented.
+- **History** walks the first-parent chain (the mainline), newest first.
+
+## gRPC API
+
+Defined in
+[proto/promptnet/v1/prompt.proto](proto/promptnet/v1/prompt.proto):
+
+```proto
+service PromptService {
+  rpc GetPrompt(GetPromptRequest)       returns (GetPromptResponse);
+  rpc DiffPrompt(DiffPromptRequest)     returns (DiffPromptResponse);   // diff stored vs. an edit
+  rpc PublishPrompt(PublishPromptRequest) returns (PublishPromptResponse);
+  rpc History(HistoryRequest)           returns (HistoryResponse);      // commit log of a branch
+  rpc CreateBranch(CreateBranchRequest) returns (CreateBranchResponse);
+  rpc MergeBranch(MergeBranchRequest)   returns (MergeBranchResponse);
+  rpc DiffCommits(DiffCommitsRequest)   returns (DiffPromptResponse);   // diff any two commits
+}
+```
+
+Key messages:
+
+```proto
+message PublishPromptRequest {
+  string uri = 1;
+  string template = 2;
+  repeated string slots = 3;
+  string message = 4;   // optional commit message
+  string branch  = 5;   // target branch; empty = "main"
+}
+
+message Commit {
+  string hash = 1;
+  string version_hash = 2;
+  string parent = 3;
+  string parent2 = 4;   // set only on merge commits
+  string author = 5;
+  string message = 6;
+  string created_at = 7;  // RFC3339
+}
+
+message HistoryRequest      { string uri = 1; string branch = 2; }       // branch empty = "main"
+message CreateBranchRequest { string uri = 1; string name = 2; string from = 3; }
+message MergeBranchRequest  { string uri = 1; string into = 2; string from = 3; string message = 4; }
+message DiffCommitsRequest  { string uri = 1; string from_hash = 2; string to_hash = 3; }
+```
+
+Errors are standard gRPC status codes:
+
+| Code | When |
+| --- | --- |
+| `NotFound` | no prompt, branch, or commit at the given identifier |
+| `InvalidArgument` | the prompt failed validation, or a required field is empty |
+| `Unauthenticated` | missing, wrong, or expired token |
+| `PermissionDenied` | the token's org scope does not match the URI's org |
+| `DataLoss` | a stored prompt failed serve-time validation |
+| `Internal` | storage or lookup error |
+
+## `promptnet` CLI
+
+```text
+promptnet serve      run the gRPC server
+promptnet put        validate and store a prompt in a local database
+promptnet diff       semantic propagation diff (stored vs. an edited file) via a server
+promptnet publish    publish a new version through a server and notify subscribers
+promptnet watch      subscribe to a prompt's change events (NATS)
+promptnet backup     dump every prompt as JSON lines
+promptnet restore    load prompts from a JSON-lines dump
+promptnet migrate    apply pending schema migrations and print the version
+promptnet gen-token  print a fresh random bearer token
+```
+
+Selected flags:
+
+- **`serve`** — `-addr`, `-db`, `-tls-cert`, `-tls-key`, `-client-ca` (mTLS),
+  `-tokens-file`, `-cache-ttl`, `-redis-url`, `-embed-url`, `-embed-model`,
+  `-nats-addr`, `-metrics-addr`, `-rate-limit`, `-rate-burst`.
+- **`put`** — `-uri`, `-file` (`-` for stdin), `-slot` (repeatable), `-db`,
+  `-force`, `-embed-url`, `-embed-model`.
+- **`diff` / `publish`** — `-addr`, `-uri`, `-file`, `-slot`, `-tls`, `-ca-cert`,
+  `-cert`, `-key`.
+
+`put` runs a pre-commit semantic check: when it overwrites an existing prompt it
+diffs the stored version against your edit, prints the report, and **refuses a
+structural change** unless you pass `-force`.
+
+See [Configuration reference](#configuration-reference) for environment variables.
+
+## Client libraries
+
+### Python
 
 ```python
-import sys
-sys.path.insert(0, "adapters/python")   # or pip-install the adapter package
-
 from promptnet import PromptClient
 
 client = PromptClient(host="localhost:8443", token="secret")
@@ -172,24 +294,26 @@ prompt = client.get("promptnet://acme/onboarding/welcome")
 
 print(prompt.template)      # Hi {name}, welcome to {org}!
 print(list(prompt.slots))   # ['name', 'org']
-print(prompt.version_hash)  # 80ec4e4d...
-
-# fill the slots yourself
-text = prompt.template.format(name="Sujal", org="Acme")
+print(prompt.version_hash)  # 80ec4e4d…
 ```
 
 `PromptClient(host, token=None, tls=False, ca_cert=None, cache_ttl=0, nats_url=None)`:
 
 - `host` — `address:port` of the server.
-- `token` — sent as the `authorization: Bearer <token>` header; omit if the
-  server has no token set.
-- `tls` / `ca_cert` — use a TLS connection, optionally pinning a CA certificate.
-- `cache_ttl` — L1 cache TTL in seconds (Phase 2); `nats_url` — for `subscribe()`.
+- `token` — sent as `authorization: Bearer <token>`; omit if the server has no
+  token configured.
+- `tls` / `ca_cert` — use TLS, optionally pinning a CA certificate.
+- `cache_ttl` — client-side (L1) cache TTL in seconds.
+- `nats_url` — endpoint for `subscribe()`.
+
+Add the adapter to your path or pip-install it:
+`sys.path.insert(0, "adapters/python")`.
 
 ### JavaScript (Node)
 
-A Node adapter mirrors the Python one in [adapters/js/client.js](adapters/js/client.js).
-It loads the `.proto` at runtime (`@grpc/proto-loader`), so there's no codegen:
+The Node adapter mirrors the Python one
+([adapters/js/client.js](adapters/js/client.js)). It loads the `.proto` at
+runtime, so there is no codegen:
 
 ```js
 const { PromptClient } = require("./adapters/js/client");
@@ -200,233 +324,150 @@ console.log(prompt.template, prompt.version_hash);
 
 `npm i @grpc/grpc-js @grpc/proto-loader` (and `nats` for `subscribe()`).
 
----
+> The bundled clients cover `get`, `diff`, and `subscribe`. The branch, merge,
+> and history RPCs are reachable through the generated stubs (`gen/`,
+> `adapters/python/promptnet/v1/`) or any gRPC client using the `.proto`.
 
-## How the code is organized
+## Validation
 
-```text
-proto/promptnet/v1/prompt.proto   The contract. Defines PromptService.GetPrompt
-                                  and the request/response messages. Everything
-                                  else is generated from or built around this.
-
-gen/                              Generated Go code (do not edit by hand).
-adapters/python/promptnet/        The Python adapter:
-  client.py                         hand-written PromptClient wrapper
-  v1/                               generated Python stubs (do not edit)
-
-internal/validate/validate.go     Pure function: is this prompt well-formed and
-                                  do its slots match the template? The single
-                                  source of "valid". Has a unit test.
-
-internal/store/store.go           SQLite-backed storage. Open/Get/Put a prompt,
-                                  plus Hash() for the version hash. This is where
-                                  ACID durability comes from.
-
-internal/server/server.go         The gRPC handler. GetPrompt looks up the
-                                  prompt, re-validates it, and returns it. Also
-                                  the auth interceptor (token + expiry + scope).
-internal/server/observability.go  Metrics, audit-log, and rate-limit
-                                  interceptors + the Prometheus /metrics handler.
-
-cmd/promptnet/main.go             The CLI entry point. Subcommands:
-                                    serve     - run the gRPC server
-                                    put       - validate and store a prompt
-                                    diff/publish - analyze / publish via a server
-                                    backup/restore - JSON-lines snapshot
-                                    migrate   - apply schema migrations
-                                    gen-token - mint a random bearer token
-```
-
-**Request flow (`serve`):** agent → gRPC → `AuthInterceptor` (token check) →
-`Server.GetPrompt` → `store.Get` (SQLite) → `validate.Prompt` (serve-time check)
-→ response.
-
-**Write flow (`put`):** read template file → `validate.Prompt` (write-time
-check) → `store.Put` (computes hash, upserts into SQLite).
-
----
-
-## The wire protocol
-
-Defined in [proto/promptnet/v1/prompt.proto](proto/promptnet/v1/prompt.proto):
-
-```proto
-service PromptService {
-  rpc GetPrompt(GetPromptRequest) returns (GetPromptResponse);
-  rpc DiffPrompt(DiffPromptRequest) returns (DiffPromptResponse);  // semantic propagation diff
-}
-
-message GetPromptRequest  { string uri = 1; }
-message GetPromptResponse {
-  string uri = 1;
-  string template = 2;
-  repeated string slots = 3;
-  string version_hash = 4;
-}
-
-message DiffPromptRequest  { string uri = 1; string new_template = 2; }
-// DiffPromptResponse returns the per-hunk three-signal analysis (see below).
-```
-
-Writes still happen via the `put` CLI; `GetPrompt` and `DiffPrompt` are the
-read/analyze surface. Errors are returned as standard gRPC status codes:
-
-| Code | When |
-| --- | --- |
-| `NotFound` | no prompt at that URI |
-| `Unauthenticated` | missing or wrong token |
-| `DataLoss` | the stored prompt failed serve-time validation |
-| `Internal` | storage/lookup error |
-
----
-
-## Validation rules
-
-A prompt is valid when ([internal/validate/validate.go](internal/validate/validate.go)):
+A prompt is valid when
+([internal/validate/validate.go](internal/validate/validate.go)):
 
 1. The URI is non-empty.
 2. The template is non-empty.
 3. No slot name is empty.
 4. Every `{placeholder}` in the template is a declared slot (no **undeclared** slots).
-5. Every declared slot actually appears in the template (no **unused** slots).
+5. Every declared slot appears in the template (no **unused** slots).
 
-Placeholders are matched with the pattern `{word}` (letters, digits, underscore).
-The same function is the write-time gate (in `put`) and the serve-time gate (in
-`GetPrompt`), so the rules can never drift between the two.
-
----
+Placeholders match `{word}` (letters, digits, underscore). The same function
+gates both writes (`put`, `publish`) and reads (`GetPrompt`), so the rules cannot
+drift between them.
 
 ## Authentication & TLS
 
-- **Auth** — set `PROMPTNET_TOKEN` when starting the server. Every request must
-  then send `authorization: Bearer <token>`; the check is constant-time. With no
-  tokens configured the server runs open (useful for local dev).
-  - **Multiple keys + org scoping** — pass `-tokens-file tokens.txt` with
-    `token [org]` lines (`#` comments allowed). A bare token is **admin** (all
-    orgs); `token acme` scopes that key to `promptnet://acme/…`. `PROMPTNET_TOKEN`
-    is always an admin key.
+**Auth.** Set `PROMPTNET_TOKEN` to require a bearer token; every request must then
+send `authorization: Bearer <token>` (checked in constant time). With no tokens
+configured the server runs open, for local development.
 
-    ```text
-    # tokens.txt — `token [org] [expiry]`
-    s3cr3t-admin                       # admin: every org, never expires
-    acme-key      acme                 # scoped: only promptnet://acme/…
-    rotating-key  acme  2026-12-31     # scoped + expires (date or RFC3339)
-    ```
+For multiple keys and org scoping, pass `-tokens-file tokens.txt` with
+`token [org] [expiry]` lines:
 
-    Every RPC (`GetPrompt`, `DiffPrompt`, `PublishPrompt`) checks the URI's org
-    against the caller's scope and returns `PermissionDenied` on a mismatch.
-    > Authorization is org-prefix scoping only; finer-grained per-prompt or
-    > read-vs-write rules aren't modeled yet.
-  - **Expiry & rotation** — a third field gives a token an expiry (a `2006-01-02`
-    date or an RFC3339 timestamp); past it the token is rejected with
-    `Unauthenticated`. Rotation is just overlapping tokens: issue the new key,
-    give the old one a near-future expiry, and drop it once it lapses — no
-    downtime. `promptnet gen-token` prints a fresh random token.
-- **TLS** — pass `-tls-cert` and `-tls-key` to `serve` to terminate TLS. On the
-  client, set `tls=True` (and optionally `ca_cert=...`). Without these flags the
-  server listens in plaintext.
-- **mTLS (mutual TLS)** — add `-client-ca ca.pem` to `serve` to also *verify the
-  client's* certificate (`RequireAndVerifyClientCert`); connections without a
-  cert signed by that CA are refused at the TLS layer, before auth. Clients
-  present their cert with `-cert`/`-key` (on `diff`/`publish`). Requires
-  `-tls-cert`/`-tls-key` to be set too.
+```text
+# tokens.txt
+s3cr3t-admin                       # admin: every org, never expires
+acme-key      acme                 # scoped: only promptnet://acme/…
+rotating-key  acme  2026-12-31     # scoped + expires (date or RFC3339)
+```
 
-  ```sh
-  promptnet serve -tls-cert server.pem -tls-key server.key -client-ca ca.pem
-  promptnet diff  -uri promptnet://acme/x -file e.txt -tls \
-    -ca-cert ca.pem -cert client.pem -key client.key
-  ```
+A bare token is **admin** (all orgs); a token with an org is scoped to
+`promptnet://org/…` and gets `PermissionDenied` for other orgs. `PROMPTNET_TOKEN`
+is always an admin key. A past expiry is rejected with `Unauthenticated`. Rotate
+by overlapping tokens: issue the new key, give the old one a near-future expiry,
+drop it once it lapses. `promptnet gen-token` mints a random token.
 
----
+> Authorization is org-prefix scoping only; per-prompt or read-vs-write rules are
+> not modeled.
 
-## Storage & version hashing
+**TLS.** Pass `-tls-cert` and `-tls-key` to terminate TLS; on the client set
+`tls=True` (and optionally `ca_cert`). Without these the server listens in
+plaintext.
+
+**mTLS.** Add `-client-ca ca.pem` to also verify the client's certificate
+(`RequireAndVerifyClientCert`); connections without a cert signed by that CA are
+refused at the TLS layer, before auth. Requires `-tls-cert`/`-tls-key`.
+
+```sh
+promptnet serve -tls-cert server.pem -tls-key server.key -client-ca ca.pem
+promptnet diff  -uri promptnet://acme/x -file e.txt -tls \
+  -ca-cert ca.pem -cert client.pem -key client.key
+```
+
+## Storage
 
 [internal/store/store.go](internal/store/store.go) runs on **SQLite** (pure-Go
 `modernc.org/sqlite`, no cgo, single binary — the self-hosted default) or
-**PostgreSQL** for multi-node enterprise. The backend is chosen from the `-db`
-value: a file path uses SQLite; a `postgres://…` DSN uses Postgres (via `pgx`).
-The schema and the upsert are portable across both; only the driver and
-placeholder style differ.
+**PostgreSQL** for multi-node deployments. The backend is chosen from `-db`: a
+file path uses SQLite; a `postgres://…` DSN uses Postgres (via `pgx`). The schema
+and queries are portable across both; only the driver and placeholder style
+differ.
 
 ```sh
-promptnet serve -db promptnet.db                          # sqlite (default)
+promptnet serve -db promptnet.db                            # sqlite (default)
 promptnet serve -db postgres://user:pass@host:5432/prompts  # postgres
 ```
 
-One table:
+Schema:
 
 ```sql
+-- prompts: the materialized tip of each prompt's "main" branch (the served HEAD)
 CREATE TABLE prompts (
   uri          TEXT PRIMARY KEY,
   template     TEXT NOT NULL,
-  slots        TEXT NOT NULL,   -- JSON array
+  slots        TEXT NOT NULL,    -- JSON array
   version_hash TEXT NOT NULL
+);
+
+-- commits: the history DAG; parent2 is set only on merge commits
+CREATE TABLE commits (
+  hash         TEXT PRIMARY KEY,
+  uri          TEXT NOT NULL,
+  template     TEXT NOT NULL,
+  slots        TEXT NOT NULL,
+  version_hash TEXT NOT NULL,
+  parent       TEXT,
+  parent2      TEXT,
+  author       TEXT NOT NULL,
+  message      TEXT NOT NULL,
+  created_at   TEXT NOT NULL
+);
+
+-- refs: a branch name -> its tip commit
+CREATE TABLE refs (
+  uri         TEXT NOT NULL,
+  branch      TEXT NOT NULL,
+  commit_hash TEXT NOT NULL,
+  PRIMARY KEY (uri, branch)
 );
 ```
 
-`Put` is an atomic upsert (insert, or update on URI conflict). `Hash` is
-`sha256(template + "\0" + slots)`, recomputed on every write so the hash always
-reflects current content. The `-db` flag chooses the file (default
-`promptnet.db`).
+A commit on `main` updates `commits`, `refs`, and `prompts` in one transaction,
+so the served HEAD always reflects the latest committed content. `version_hash`
+is `sha256(template + "\0" + slots)`, recomputed on every write.
 
-### Schema migrations
+### Migrations
 
 The schema is an ordered list of migration steps (`migrations` in
-[internal/store/store.go](internal/store/store.go)), applied once each — every
-`Open` runs the pending ones inside a transaction and records progress in a
-`schema_version` table, so startup is always idempotent and a failed step rolls
-back cleanly. To evolve the schema, **append** a step (never edit or reorder an
-existing one). `promptnet migrate -db …` applies pending steps and prints the
-version — run it as a deploy step against Postgres.
+[internal/store/store.go](internal/store/store.go)), each applied once. Every
+`Open` runs the pending steps in a transaction and records progress in
+`schema_version`, so startup is idempotent and a failed step rolls back cleanly.
+To evolve the schema, **append** a step — never edit or reorder an existing one.
+`promptnet migrate -db …` applies pending steps and prints the version; run it as
+a deploy step against Postgres.
 
 ### Backup & restore
 
 `backup` dumps every prompt as JSON lines; `restore` upserts them back. The
-format is portable, so it doubles as a SQLite↔Postgres migration path. Restore
-reuses the idempotent upsert, so it's safe to re-run.
+format is portable, so it doubles as a SQLite↔Postgres migration path, and the
+upsert makes restore safe to re-run.
 
 ```sh
 promptnet backup  -db promptnet.db -out snapshot.jsonl
 promptnet restore -db postgres://user:pass@host/prompts -in snapshot.jsonl
 ```
 
----
+> Backup/restore covers the served HEAD (the `prompts` table), not the full
+> commit history.
 
-## Observability & rate limiting
+## Caching
 
-Three gRPC interceptors, chained in front of every RPC
-([internal/server/observability.go](internal/server/observability.go)):
+Two opt-in layers, both keyed by URI with TTL-bounded freshness. Only
+**validated** prompts are cached, so a malformed prompt is never served from
+cache.
 
-- **Metrics** — a Prometheus endpoint at `-metrics-addr` (default `:2112`,
-  empty disables). It exposes request counts (`promptnet_requests_total` by
-  method + gRPC code) and a latency histogram (`promptnet_request_duration_seconds`),
-  plus Go runtime metrics. Point Prometheus at it and add Prometheus as a
-  Grafana data source — a sample scrape config is in
-  [monitoring/prometheus.yml](monitoring/prometheus.yml).
-- **Audit log** — one structured (slog JSON) line per RPC on stderr: method, org
-  scope, uri, gRPC code, and latency.
-- **Rate limiting** — a per-org token bucket. Opt-in via `-rate-limit <rps>`
-  (`0` disables); `-rate-burst` sets the burst (defaults to the rps). Over-limit
-  calls get `ResourceExhausted`.
-
-```sh
-promptnet serve -metrics-addr :2112 -rate-limit 50 -rate-burst 100
-curl localhost:2112/metrics
-```
-
----
-
-## Caching (Phase 2)
-
-Two layers, both opt-in and both keyed by URI with TTL-bounded freshness. Only
-**validated** prompts are ever cached, so a malformed prompt can never be served
-from cache.
-
-- **L2 (server-side)** — an in-process cache in front of SQLite. Enabled by
-  default; tune with `serve -cache-ttl 30s` (`0` disables). A `put` that changes
-  a prompt is reflected within the TTL.
-- **L1 (client-side)** — an in-process cache in the Python client. Off by
-  default; enable with `PromptClient(..., cache_ttl=30)` (seconds).
+- **Server-side (L2)** — an in-process cache in front of the store. On by
+  default; tune with `serve -cache-ttl 30s` (`0` disables).
+- **Client-side (L1)** — an in-process cache in the client. Off by default;
+  enable with `PromptClient(..., cache_ttl=30)`.
 
 ```python
 client = PromptClient(host="localhost:8443", token="secret", cache_ttl=30)
@@ -434,26 +475,21 @@ client.get("promptnet://acme/onboarding/welcome")  # first call hits the server
 client.get("promptnet://acme/onboarding/welcome")  # served from L1 for 30s
 ```
 
-By default L2 is **in-process**, keeping the single-binary promise. For
-multi-node deployments, point it at **Redis** so instances share one cache:
+For multi-node deployments, point L2 at **Redis** so instances share one cache:
 
 ```sh
 promptnet serve -redis-url redis://localhost:6379/0   # or PROMPTNET_REDIS_URL
 ```
 
-Both implement the same `Cache` interface
+Both backends implement the same `Cache` interface
 ([internal/server/cache.go](internal/server/cache.go),
 [internal/server/redis_cache.go](internal/server/redis_cache.go)); responses are
-stored as marshaled protobuf with the TTL as key expiry, and every op is
+stored as marshaled protobuf with the TTL as key expiry. Every cache op is
 best-effort — a Redis hiccup degrades to a cache miss, never a serving error.
-A changed prompt produces a new `version_hash`, so content is always
-self-identifying; TTL just bounds how long a URI→version mapping can lag.
 
----
+## Semantic Propagation Diff
 
-## Semantic Propagation Diff (Phase 3)
-
-A text diff tells you *that* line N changed. This tells you *how far the meaning
+A text diff tells you *that* a line changed. This tells you *how far the meaning
 shift ripples* through the surrounding prompt — the difference between a safe
 local tweak and a structural change that quietly rewires how nearby instructions
 relate.
@@ -462,30 +498,26 @@ For each changed hunk it measures three signals
 ([internal/semdiff/semdiff.go](internal/semdiff/semdiff.go)):
 
 1. **Signal 1** — the changed region (a line-level LCS diff hunk).
-2. **Signal 2** — semantic delta *at the point of change*: `1 - cosine(old, new)`.
-3. **Signal 3** — propagation profile: grow the window outward (±2, ±4, ±6 …),
-   **up and down independently**, recomputing the delta at each step until the
-   curve **flattens** (propagation stopped) or hits the **file boundary**.
+2. **Signal 2** — semantic delta at the point of change: `1 - cosine(old, new)`.
+3. **Signal 3** — propagation profile: grow the window outward (±2, ±4, ±6 …), up
+   and down independently, recomputing the delta until the curve flattens
+   (propagation stopped) or hits the file boundary.
 
 High Signal 2 + flat Signal 3 → **localized tweak**. Signal 3 still high at the
 boundary → **structural** (the dangerous one).
 
-The diff runs **server-side**, against the **stored** prompt (the original),
-using the embedding model the **operator configured at server startup** — so the
-analysis is consistent for everyone and prompts never leave your infrastructure.
-
-**The operator chooses the embedding model when starting the server.** With no
-URL the server falls back to an offline, zero-dependency *lexical* embedder
-(hashed bag-of-words) — enough to run and demo the mechanics, but it scores
-overlap, not meaning. Point `-embed-url` at any OpenAI-compatible endpoint
-(Ollama, text-embedding-inference, llama.cpp) for real semantics:
+The diff runs **server-side**, against the **stored** prompt, using the embedding
+model the **operator configured at startup** — so analysis is consistent for
+everyone and prompts never leave your infrastructure. With no URL configured the
+server falls back to an offline, zero-dependency *lexical* embedder (hashed
+bag-of-words) that scores overlap, not meaning. Point `-embed-url` at any
+OpenAI-compatible endpoint (Ollama, text-embeddings-inference, llama.cpp) for
+real semantics:
 
 ```sh
-# real model (also reads PROMPTNET_EMBED_URL / _MODEL / _KEY)
 promptnet serve -embed-url http://localhost:11434/v1/embeddings -embed-model nomic-embed-text
+# (also reads PROMPTNET_EMBED_URL / _MODEL / _KEY)
 ```
-
-Then diff an edited template against the stored original through the server:
 
 ```sh
 promptnet diff -uri promptnet://acme/support/agent -file edited.txt -addr localhost:8443
@@ -496,52 +528,45 @@ promptnet diff -uri promptnet://acme/support/agent -file edited.txt -addr localh
 #   => localized tweak
 ```
 
-Or from the Python adapter: `client.diff("promptnet://…", edited_template)`.
+`DiffPrompt` diffs a stored prompt against an edit; `DiffCommits` diffs any two
+commits in history. The same engine powers `promptctl diff` for local authoring.
 
-The same engine powers `promptctl diff` for local authoring (below).
-
----
-
-## Authoring with `promptctl` (Phase 3)
+## Authoring with `promptctl`
 
 `promptctl` is the local authoring CLI. Prompts live as `*.prompt` files in a git
-repo; **versioning, history and lineage are plain git, embedded via go-git** (no
-external git binary needed). promptctl adds the prompt-specific layer: validation,
-the semantic propagation diff, and environment promotion. A prompt's URI is its
-path — `acme/support/agent.prompt` → `promptnet://acme/support/agent`; slots are
-read from the template's `{placeholders}`.
+repo; versioning, history, and lineage are plain git, embedded via go-git (no
+external git binary). promptctl adds validation, the semantic propagation diff,
+and environment promotion. A prompt's URI is its path —
+`acme/support/agent.prompt` → `promptnet://acme/support/agent`; slots are read
+from the template's `{placeholders}`.
 
 ```sh
-promptctl commit -m "msg"              # validate every *.prompt, then commit all changes
-promptctl diff [ref]                   # semantic propagation diff vs ref (default HEAD)
-promptctl log acme/support/agent.prompt   # version lineage of one prompt
-promptctl promote acme/x.prompt dev prod  # bring a prompt from branch dev onto prod
-promptctl push [-server host:port]     # validate, git push, then publish to the live server
-promptctl pull                         # sync with origin
-promptctl publish -server host:port [paths…]  # publish to the live server + notify subscribers
+promptctl commit -m "msg"                     # validate every *.prompt, then commit changes
+promptctl diff [ref]                           # semantic diff vs ref (default HEAD)
+promptctl log acme/support/agent.prompt        # version lineage of one prompt
+promptctl promote acme/x.prompt dev prod       # bring a prompt from branch dev onto prod
+promptctl push [-server host:port]             # validate, git push, then publish to the server
+promptctl pull                                 # sync with origin
+promptctl publish -server host:port [paths…]   # publish to the server + notify subscribers
 ```
-
-**Authoring flows into distribution.** `promptctl push -server …` git-pushes
-*and* publishes each prompt to the live server, so subscribers are notified in
-the same step. Publishing is idempotent server-side (`PublishPrompt` is a no-op
-when the version hash is unchanged), so only actually-changed prompts fire a
-notification. git stays the source of truth; the server is the live serving copy.
 
 - **commit / push** validate first — a malformed prompt blocks the whole commit.
 - **diff** compares each changed `*.prompt` between a ref and the working tree
-  using the embedding model from `PROMPTNET_EMBED_*` (offline lexical by default).
-- **promote** is the dev → staging → prod model: environments are branches, and
-  promoting copies a validated prompt from one branch onto another and commits it.
-- **push / pull** use go-git, so they don't read git's credential helper — set
+  using the `PROMPTNET_EMBED_*` model (offline lexical by default).
+- **promote** models dev → staging → prod as branches: it copies a validated
+  prompt from one branch onto another and commits it.
+- **push / pull** use go-git and do not read git's credential helper — set
   `PROMPTNET_GIT_TOKEN` for HTTPS remotes; SSH uses your ssh-agent.
 
----
+`promptctl push -server …` git-pushes *and* publishes each prompt, so subscribers
+are notified in the same step. Publishing is idempotent (`PublishPrompt` is a
+no-op when the version hash is unchanged), so only changed prompts fire a
+notification. Git stays the source of truth; the server is the live serving copy.
 
-## Pub/Sub distribution (Phase 4)
+## Pub/sub distribution
 
-Prompt servers are publishers; agents are subscribers. The server embeds a
-**NATS** server in-process (still one binary), and the write-through
-`PublishPrompt` RPC stores a new version *and* notifies subscribers.
+The server embeds a **NATS** server in-process (still one binary). The
+write-through `PublishPrompt` RPC stores a new version *and* notifies subscribers.
 
 ```sh
 # server: embedded NATS is on by default (-nats-addr "" disables it)
@@ -553,8 +578,8 @@ promptnet publish -uri promptnet://acme/support/agent -file v2.txt -slot name
 ```
 
 Each prompt maps to a NATS subject — `promptnet://acme/support/agent` →
-`promptnet.acme.support.agent`. An agent subscribes in one line (push), and the
-`cache_ttl` from Phase 2 is the pull side:
+`promptnet.acme.support.agent`. An agent subscribes in one line (the push side);
+`cache_ttl` is the pull side:
 
 ```python
 client = PromptClient(host="…:8443", cache_ttl=30, nats_url="nats://…:4222")
@@ -562,35 +587,92 @@ client.subscribe("promptnet://acme/support/agent",
                  lambda version: print("new version", version))  # needs `pip install nats-py`
 ```
 
-**Honest consistency model:** this layer is eventually consistent — a push can be
-missed (network), so TTL is the convergence guarantee, not the push. Notify is
+**Consistency model.** This layer is eventually consistent: a push can be missed
+(network), so the TTL is the convergence guarantee, not the push. Notify is
 best-effort; the version is durably stored regardless, and subscribers converge
-on their next poll. Same tradeoff as Kafka/NATS generally.
+on their next poll.
 
----
+## Observability & rate limiting
+
+Three gRPC interceptors run in front of every RPC
+([internal/server/observability.go](internal/server/observability.go)):
+
+- **Metrics** — a Prometheus endpoint at `-metrics-addr` (default `:2112`, empty
+  disables) exposing request counts (`promptnet_requests_total` by method + code),
+  a latency histogram (`promptnet_request_duration_seconds`), and Go runtime
+  metrics. A sample scrape config is in
+  [monitoring/prometheus.yml](monitoring/prometheus.yml).
+- **Audit log** — one structured (slog JSON) line per RPC on stderr: method, org
+  scope, uri, gRPC code, latency.
+- **Rate limiting** — a per-org token bucket. Opt-in via `-rate-limit <rps>`
+  (`0` disables); `-rate-burst` sets the burst (defaults to the rps). Over-limit
+  calls get `ResourceExhausted`.
+
+```sh
+promptnet serve -metrics-addr :2112 -rate-limit 50 -rate-burst 100
+curl localhost:2112/metrics
+```
+
+## Configuration reference
+
+Environment variables:
+
+| Variable | Used by | Purpose |
+| --- | --- | --- |
+| `PROMPTNET_TOKEN` | server, clients | admin bearer token (server); credential (clients) |
+| `PROMPTNET_EMBED_URL` | server, `put` | OpenAI-compatible embeddings endpoint |
+| `PROMPTNET_EMBED_MODEL` | server, `put` | embedding model name |
+| `PROMPTNET_EMBED_KEY` | server, `put` | API key for the embeddings endpoint |
+| `PROMPTNET_REDIS_URL` | server | Redis URL for a shared L2 cache |
+| `PROMPTNET_GIT_TOKEN` | `promptctl` | token for HTTPS git remotes |
+
+CLI flags are listed under [`promptnet` CLI](#promptnet-cli); the
+[docker-compose.yml](docker-compose.yml) shows a full `serve` invocation.
 
 ## Regenerating code from the proto
 
-Anything under `gen/` and `adapters/python/promptnet/v1/` is generated. After
-editing the `.proto`, run:
+Everything under `gen/` and `adapters/python/promptnet/v1/` is generated. After
+editing the `.proto`:
 
 ```sh
 buf generate
 ```
 
 [buf.gen.yaml](buf.gen.yaml) configures the output (Go into `gen/`, Python into
-`adapters/python/`) using buf's remote plugins, so you don't install `protoc` or
-any plugins locally. Don't hand-edit generated files — they'll be overwritten.
+`adapters/python/`) using buf's remote plugins, so no `protoc` or plugin installs
+are needed. Do not hand-edit generated files.
 
----
+## Project layout
 
-## Roadmap
+```text
+proto/promptnet/v1/prompt.proto    The service contract. Source of truth.
+gen/                               Generated Go code (do not edit).
+adapters/python/promptnet/         Python client: client.py + generated v1/ stubs.
+adapters/js/client.js              Node client (loads the proto at runtime).
 
-| Version | Ships | Status |
-| --- | --- | --- |
-| **v0.1** | gRPC server, Python adapter, validation | **this repo** |
-| **v0.2** | L1/L2 caching (TTL), keyed on `version_hash` | **this repo** |
-| **v0.3** | `promptctl` CLI: commit/diff/log/promote/push/pull, go-git versioning | **this repo** |
-| **v0.4** | Pub/sub distribution over embedded NATS, TTL sync, subscriber model | **this repo** |
-| **v0.5** | PostgreSQL backend, Redis L2 cache, org-scoped multi-token auth | **this repo** |
-| **v0.6** | Token expiry/rotation, mTLS, Prometheus metrics + audit log, per-org rate limiting, backup/restore, schema migrations | **this repo** |
+internal/validate/validate.go      Prompt well-formedness — the one definition of "valid".
+internal/store/store.go            SQLite/Postgres storage: prompts, commits, refs, migrations.
+internal/semdiff/semdiff.go        The semantic propagation diff engine.
+internal/server/server.go          gRPC handlers + auth interceptor.
+internal/server/observability.go   Metrics, audit-log, rate-limit interceptors.
+internal/server/cache.go           In-process and Redis L2 caches.
+internal/pubsub/pubsub.go          Embedded NATS publisher + subscriber.
+
+cmd/promptnet/main.go              Server + operational CLI.
+cmd/promptctl/main.go              Git-backed authoring CLI.
+```
+
+**Serve request flow:** agent → gRPC → auth interceptor → `Server.GetPrompt` →
+`store.Get` → serve-time `validate.Prompt` → response.
+
+## Release history
+
+| Version | Ships |
+| --- | --- |
+| **v0.1** | gRPC server, Python adapter, validation |
+| **v0.2** | L1/L2 caching (TTL), keyed on `version_hash` |
+| **v0.3** | `promptctl` CLI: commit/diff/log/promote/push/pull, go-git versioning |
+| **v0.4** | Pub/sub distribution over embedded NATS, TTL sync, subscriber model |
+| **v0.5** | PostgreSQL backend, Redis L2 cache, org-scoped multi-token auth |
+| **v0.6** | Token expiry/rotation, mTLS, Prometheus metrics + audit log, per-org rate limiting, backup/restore, schema migrations |
+| **v0.7** | Server-side versioning: commit DAG, branches, merges, history, commit-to-commit diff |
