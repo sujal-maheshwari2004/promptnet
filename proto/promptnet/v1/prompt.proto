@@ -26,6 +26,18 @@ service PromptService {
   // DiffCommits runs the semantic diff between any two commits of a prompt — the
   // query-anything-in-history path.
   rpc DiffCommits(DiffCommitsRequest) returns (DiffPromptResponse);
+  // SetBranch points a branch at an existing commit — the rollback / pin path.
+  // Moving "main" instantly changes the served version.
+  rpc SetBranch(SetBranchRequest) returns (SetBranchResponse);
+}
+
+message SetBranchRequest {
+  string uri = 1;
+  string branch = 2;      // empty = "main"
+  string commit_hash = 3; // the commit to point the branch at
+}
+message SetBranchResponse {
+  string version_hash = 1; // content now served on that branch
 }
 
 // Commit is one node in a prompt's history DAG.
@@ -75,6 +87,9 @@ message DiffCommitsRequest {
 message GetPromptRequest {
   // promptnet://org/repo/prompt-name
   string uri = 1;
+  // Optional: a branch name or commit hash to fetch a specific version.
+  // Empty returns the served HEAD of "main". Lets agents pin a version.
+  string ref = 2;
 }
 
 message GetPromptResponse {
@@ -83,6 +98,9 @@ message GetPromptResponse {
   repeated string slots = 3;
   // sha256 over template + slots; the Phase 2 cache key.
   string version_hash = 4;
+  // The commit served. Set when fetched by ref; empty for the HEAD fast path.
+  // Pin to this for an exact point in history (version_hash pins content only).
+  string commit_hash = 5;
 }
 
 message PublishPromptRequest {

@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x19promptnet/v1/prompt.proto\x12\x0cpromptnet.v1\"\xc2\x01\n\x06\x43ommit\x12\x12\n\x04hash\x18\x01 \x01(\tR\x04hash\x12!\n\x0cversion_hash\x18\x02 \x01(\tR\x0bversionHash\x12\x16\n\x06parent\x18\x03 \x01(\tR\x06parent\x12\x18\n\x07parent2\x18\x04 \x01(\tR\x07parent2\x12\x16\n\x06\x61uthor\x18\x05 \x01(\tR\x06\x61uthor\x12\x18\n\x07message\x18\x06 \x01(\tR\x07message\x12\x1d\n\ncreated_at\x18\x07 \x01(\tR\tcreatedAt\":\n\x0eHistoryRequest\x12\x10\n\x03uri\x18\x01 \x01(\tR\x03uri\x12\x16\n\x06\x62ranch\x18\x02 \x01(\tR\x06\x62ranch\"A\n\x0fHistoryResponse\x12.\n\x07\x63ommits\x18\x01 \x03(\x0b\x32\x14.promptnet.v1.CommitR\x07\x63ommits\"O\n\x13\x43reateBranchRequest\x12\x10\n\x03uri\x18\x01 \x01(\tR\x03uri\x12\x12\n\x04name\x18\x02 \x01(\tR\x04name\x12\x12\n\x04\x66rom\x18\x03 \x01(\tR\x04\x66rom\"7\n\x14\x43reateBranchResponse\x12\x1f\n\x0b\x63ommit_hash\x18\x01 \x01(\tR\ncommitHash\"h\n\x12MergeBranchRequest\x12\x10\n\x03uri\x18\x01 \x01(\tR\x03uri\x12\x12\n\x04into\x18\x02 \x01(\tR\x04into\x12\x12\n\x04\x66rom\x18\x03 \x01(\tR\x04\x66rom\x12\x18\n\x07message\x18\x04 \x01(\tR\x07message\"6\n\x13MergeBranchResponse\x12\x1f\n\x0b\x63ommit_hash\x18\x01 \x01(\tR\ncommitHash\"\\\n\x12\x44iffCommitsRequest\x12\x10\n\x03uri\x18\x01 \x01(\tR\x03uri\x12\x1b\n\tfrom_hash\x18\x02 \x01(\tR\x08\x66romHash\x12\x17\n\x07to_hash\x18\x03 \x01(\tR\x06toHash\"$\n\x10GetPromptRequest\x12\x10\n\x03uri\x18\x01 \x01(\tR\x03uri\"z\n\x11GetPromptResponse\x12\x10\n\x03uri\x18\x01 \x01(\tR\x03uri\x12\x1a\n\x08template\x18\x02 \x01(\tR\x08template\x12\x14\n\x05slots\x18\x03 \x03(\tR\x05slots\x12!\n\x0cversion_hash\x18\x04 \x01(\tR\x0bversionHash\"\x8c\x01\n\x14PublishPromptRequest\x12\x10\n\x03uri\x18\x01 \x01(\tR\x03uri\x12\x1a\n\x08template\x18\x02 \x01(\tR\x08template\x12\x14\n\x05slots\x18\x03 \x03(\tR\x05slots\x12\x18\n\x07message\x18\x04 \x01(\tR\x07message\x12\x16\n\x06\x62ranch\x18\x05 \x01(\tR\x06\x62ranch\":\n\x15PublishPromptResponse\x12!\n\x0cversion_hash\x18\x01 \x01(\tR\x0bversionHash\"H\n\x11\x44iffPromptRequest\x12\x10\n\x03uri\x18\x01 \x01(\tR\x03uri\x12!\n\x0cnew_template\x18\x02 \x01(\tR\x0bnewTemplate\"D\n\x12\x44iffPromptResponse\x12.\n\x07\x63hanges\x18\x01 \x03(\x0b\x32\x14.promptnet.v1.ChangeR\x07\x63hanges\"6\n\x06Window\x12\x16\n\x06radius\x18\x01 \x01(\x05R\x06radius\x12\x14\n\x05\x64\x65lta\x18\x02 \x01(\x01R\x05\x64\x65lta\"\xe7\x02\n\x06\x43hange\x12\x1b\n\told_start\x18\x01 \x01(\x05R\x08oldStart\x12\x17\n\x07old_end\x18\x02 \x01(\x05R\x06oldEnd\x12\x1b\n\tnew_start\x18\x03 \x01(\x05R\x08newStart\x12\x17\n\x07new_end\x18\x04 \x01(\x05R\x06newEnd\x12\x12\n\x04kind\x18\x05 \x01(\tR\x04kind\x12\x1f\n\x0bpoint_delta\x18\x06 \x01(\x01R\npointDelta\x12$\n\x02up\x18\x07 \x03(\x0b\x32\x14.promptnet.v1.WindowR\x02up\x12(\n\x04\x64own\x18\x08 \x03(\x0b\x32\x14.promptnet.v1.WindowR\x04\x64own\x12\x1f\n\x0bup_boundary\x18\t \x01(\x08R\nupBoundary\x12#\n\rdown_boundary\x18\n \x01(\x08R\x0c\x64ownBoundary\x12&\n\x0e\x63lassification\x18\x0b \x01(\tR\x0e\x63lassification2\xce\x04\n\rPromptService\x12L\n\tGetPrompt\x12\x1e.promptnet.v1.GetPromptRequest\x1a\x1f.promptnet.v1.GetPromptResponse\x12O\n\nDiffPrompt\x12\x1f.promptnet.v1.DiffPromptRequest\x1a .promptnet.v1.DiffPromptResponse\x12X\n\rPublishPrompt\x12\".promptnet.v1.PublishPromptRequest\x1a#.promptnet.v1.PublishPromptResponse\x12\x46\n\x07History\x12\x1c.promptnet.v1.HistoryRequest\x1a\x1d.promptnet.v1.HistoryResponse\x12U\n\x0c\x43reateBranch\x12!.promptnet.v1.CreateBranchRequest\x1a\".promptnet.v1.CreateBranchResponse\x12R\n\x0bMergeBranch\x12 .promptnet.v1.MergeBranchRequest\x1a!.promptnet.v1.MergeBranchResponse\x12Q\n\x0b\x44iffCommits\x12 .promptnet.v1.DiffCommitsRequest\x1a .promptnet.v1.DiffPromptResponseB(Z&promptnet/gen/promptnet/v1;promptnetv1b\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x19promptnet/v1/prompt.proto\x12\x0cpromptnet.v1\"]\n\x10SetBranchRequest\x12\x10\n\x03uri\x18\x01 \x01(\tR\x03uri\x12\x16\n\x06\x62ranch\x18\x02 \x01(\tR\x06\x62ranch\x12\x1f\n\x0b\x63ommit_hash\x18\x03 \x01(\tR\ncommitHash\"6\n\x11SetBranchResponse\x12!\n\x0cversion_hash\x18\x01 \x01(\tR\x0bversionHash\"\xc2\x01\n\x06\x43ommit\x12\x12\n\x04hash\x18\x01 \x01(\tR\x04hash\x12!\n\x0cversion_hash\x18\x02 \x01(\tR\x0bversionHash\x12\x16\n\x06parent\x18\x03 \x01(\tR\x06parent\x12\x18\n\x07parent2\x18\x04 \x01(\tR\x07parent2\x12\x16\n\x06\x61uthor\x18\x05 \x01(\tR\x06\x61uthor\x12\x18\n\x07message\x18\x06 \x01(\tR\x07message\x12\x1d\n\ncreated_at\x18\x07 \x01(\tR\tcreatedAt\":\n\x0eHistoryRequest\x12\x10\n\x03uri\x18\x01 \x01(\tR\x03uri\x12\x16\n\x06\x62ranch\x18\x02 \x01(\tR\x06\x62ranch\"A\n\x0fHistoryResponse\x12.\n\x07\x63ommits\x18\x01 \x03(\x0b\x32\x14.promptnet.v1.CommitR\x07\x63ommits\"O\n\x13\x43reateBranchRequest\x12\x10\n\x03uri\x18\x01 \x01(\tR\x03uri\x12\x12\n\x04name\x18\x02 \x01(\tR\x04name\x12\x12\n\x04\x66rom\x18\x03 \x01(\tR\x04\x66rom\"7\n\x14\x43reateBranchResponse\x12\x1f\n\x0b\x63ommit_hash\x18\x01 \x01(\tR\ncommitHash\"h\n\x12MergeBranchRequest\x12\x10\n\x03uri\x18\x01 \x01(\tR\x03uri\x12\x12\n\x04into\x18\x02 \x01(\tR\x04into\x12\x12\n\x04\x66rom\x18\x03 \x01(\tR\x04\x66rom\x12\x18\n\x07message\x18\x04 \x01(\tR\x07message\"6\n\x13MergeBranchResponse\x12\x1f\n\x0b\x63ommit_hash\x18\x01 \x01(\tR\ncommitHash\"\\\n\x12\x44iffCommitsRequest\x12\x10\n\x03uri\x18\x01 \x01(\tR\x03uri\x12\x1b\n\tfrom_hash\x18\x02 \x01(\tR\x08\x66romHash\x12\x17\n\x07to_hash\x18\x03 \x01(\tR\x06toHash\"6\n\x10GetPromptRequest\x12\x10\n\x03uri\x18\x01 \x01(\tR\x03uri\x12\x10\n\x03ref\x18\x02 \x01(\tR\x03ref\"\x9b\x01\n\x11GetPromptResponse\x12\x10\n\x03uri\x18\x01 \x01(\tR\x03uri\x12\x1a\n\x08template\x18\x02 \x01(\tR\x08template\x12\x14\n\x05slots\x18\x03 \x03(\tR\x05slots\x12!\n\x0cversion_hash\x18\x04 \x01(\tR\x0bversionHash\x12\x1f\n\x0b\x63ommit_hash\x18\x05 \x01(\tR\ncommitHash\"\x8c\x01\n\x14PublishPromptRequest\x12\x10\n\x03uri\x18\x01 \x01(\tR\x03uri\x12\x1a\n\x08template\x18\x02 \x01(\tR\x08template\x12\x14\n\x05slots\x18\x03 \x03(\tR\x05slots\x12\x18\n\x07message\x18\x04 \x01(\tR\x07message\x12\x16\n\x06\x62ranch\x18\x05 \x01(\tR\x06\x62ranch\":\n\x15PublishPromptResponse\x12!\n\x0cversion_hash\x18\x01 \x01(\tR\x0bversionHash\"H\n\x11\x44iffPromptRequest\x12\x10\n\x03uri\x18\x01 \x01(\tR\x03uri\x12!\n\x0cnew_template\x18\x02 \x01(\tR\x0bnewTemplate\"D\n\x12\x44iffPromptResponse\x12.\n\x07\x63hanges\x18\x01 \x03(\x0b\x32\x14.promptnet.v1.ChangeR\x07\x63hanges\"6\n\x06Window\x12\x16\n\x06radius\x18\x01 \x01(\x05R\x06radius\x12\x14\n\x05\x64\x65lta\x18\x02 \x01(\x01R\x05\x64\x65lta\"\xe7\x02\n\x06\x43hange\x12\x1b\n\told_start\x18\x01 \x01(\x05R\x08oldStart\x12\x17\n\x07old_end\x18\x02 \x01(\x05R\x06oldEnd\x12\x1b\n\tnew_start\x18\x03 \x01(\x05R\x08newStart\x12\x17\n\x07new_end\x18\x04 \x01(\x05R\x06newEnd\x12\x12\n\x04kind\x18\x05 \x01(\tR\x04kind\x12\x1f\n\x0bpoint_delta\x18\x06 \x01(\x01R\npointDelta\x12$\n\x02up\x18\x07 \x03(\x0b\x32\x14.promptnet.v1.WindowR\x02up\x12(\n\x04\x64own\x18\x08 \x03(\x0b\x32\x14.promptnet.v1.WindowR\x04\x64own\x12\x1f\n\x0bup_boundary\x18\t \x01(\x08R\nupBoundary\x12#\n\rdown_boundary\x18\n \x01(\x08R\x0c\x64ownBoundary\x12&\n\x0e\x63lassification\x18\x0b \x01(\tR\x0e\x63lassification2\x9c\x05\n\rPromptService\x12L\n\tGetPrompt\x12\x1e.promptnet.v1.GetPromptRequest\x1a\x1f.promptnet.v1.GetPromptResponse\x12O\n\nDiffPrompt\x12\x1f.promptnet.v1.DiffPromptRequest\x1a .promptnet.v1.DiffPromptResponse\x12X\n\rPublishPrompt\x12\".promptnet.v1.PublishPromptRequest\x1a#.promptnet.v1.PublishPromptResponse\x12\x46\n\x07History\x12\x1c.promptnet.v1.HistoryRequest\x1a\x1d.promptnet.v1.HistoryResponse\x12U\n\x0c\x43reateBranch\x12!.promptnet.v1.CreateBranchRequest\x1a\".promptnet.v1.CreateBranchResponse\x12R\n\x0bMergeBranch\x12 .promptnet.v1.MergeBranchRequest\x1a!.promptnet.v1.MergeBranchResponse\x12Q\n\x0b\x44iffCommits\x12 .promptnet.v1.DiffCommitsRequest\x1a .promptnet.v1.DiffPromptResponse\x12L\n\tSetBranch\x12\x1e.promptnet.v1.SetBranchRequest\x1a\x1f.promptnet.v1.SetBranchResponseB(Z&promptnet/gen/promptnet/v1;promptnetv1b\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -32,38 +32,42 @@ _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'promptnet.v1.prompt_pb2', _
 if not _descriptor._USE_C_DESCRIPTORS:
   _globals['DESCRIPTOR']._loaded_options = None
   _globals['DESCRIPTOR']._serialized_options = b'Z&promptnet/gen/promptnet/v1;promptnetv1'
-  _globals['_COMMIT']._serialized_start=44
-  _globals['_COMMIT']._serialized_end=238
-  _globals['_HISTORYREQUEST']._serialized_start=240
-  _globals['_HISTORYREQUEST']._serialized_end=298
-  _globals['_HISTORYRESPONSE']._serialized_start=300
-  _globals['_HISTORYRESPONSE']._serialized_end=365
-  _globals['_CREATEBRANCHREQUEST']._serialized_start=367
-  _globals['_CREATEBRANCHREQUEST']._serialized_end=446
-  _globals['_CREATEBRANCHRESPONSE']._serialized_start=448
-  _globals['_CREATEBRANCHRESPONSE']._serialized_end=503
-  _globals['_MERGEBRANCHREQUEST']._serialized_start=505
-  _globals['_MERGEBRANCHREQUEST']._serialized_end=609
-  _globals['_MERGEBRANCHRESPONSE']._serialized_start=611
-  _globals['_MERGEBRANCHRESPONSE']._serialized_end=665
-  _globals['_DIFFCOMMITSREQUEST']._serialized_start=667
-  _globals['_DIFFCOMMITSREQUEST']._serialized_end=759
-  _globals['_GETPROMPTREQUEST']._serialized_start=761
-  _globals['_GETPROMPTREQUEST']._serialized_end=797
-  _globals['_GETPROMPTRESPONSE']._serialized_start=799
-  _globals['_GETPROMPTRESPONSE']._serialized_end=921
-  _globals['_PUBLISHPROMPTREQUEST']._serialized_start=924
-  _globals['_PUBLISHPROMPTREQUEST']._serialized_end=1064
-  _globals['_PUBLISHPROMPTRESPONSE']._serialized_start=1066
-  _globals['_PUBLISHPROMPTRESPONSE']._serialized_end=1124
-  _globals['_DIFFPROMPTREQUEST']._serialized_start=1126
-  _globals['_DIFFPROMPTREQUEST']._serialized_end=1198
-  _globals['_DIFFPROMPTRESPONSE']._serialized_start=1200
-  _globals['_DIFFPROMPTRESPONSE']._serialized_end=1268
-  _globals['_WINDOW']._serialized_start=1270
-  _globals['_WINDOW']._serialized_end=1324
-  _globals['_CHANGE']._serialized_start=1327
-  _globals['_CHANGE']._serialized_end=1686
-  _globals['_PROMPTSERVICE']._serialized_start=1689
-  _globals['_PROMPTSERVICE']._serialized_end=2279
+  _globals['_SETBRANCHREQUEST']._serialized_start=43
+  _globals['_SETBRANCHREQUEST']._serialized_end=136
+  _globals['_SETBRANCHRESPONSE']._serialized_start=138
+  _globals['_SETBRANCHRESPONSE']._serialized_end=192
+  _globals['_COMMIT']._serialized_start=195
+  _globals['_COMMIT']._serialized_end=389
+  _globals['_HISTORYREQUEST']._serialized_start=391
+  _globals['_HISTORYREQUEST']._serialized_end=449
+  _globals['_HISTORYRESPONSE']._serialized_start=451
+  _globals['_HISTORYRESPONSE']._serialized_end=516
+  _globals['_CREATEBRANCHREQUEST']._serialized_start=518
+  _globals['_CREATEBRANCHREQUEST']._serialized_end=597
+  _globals['_CREATEBRANCHRESPONSE']._serialized_start=599
+  _globals['_CREATEBRANCHRESPONSE']._serialized_end=654
+  _globals['_MERGEBRANCHREQUEST']._serialized_start=656
+  _globals['_MERGEBRANCHREQUEST']._serialized_end=760
+  _globals['_MERGEBRANCHRESPONSE']._serialized_start=762
+  _globals['_MERGEBRANCHRESPONSE']._serialized_end=816
+  _globals['_DIFFCOMMITSREQUEST']._serialized_start=818
+  _globals['_DIFFCOMMITSREQUEST']._serialized_end=910
+  _globals['_GETPROMPTREQUEST']._serialized_start=912
+  _globals['_GETPROMPTREQUEST']._serialized_end=966
+  _globals['_GETPROMPTRESPONSE']._serialized_start=969
+  _globals['_GETPROMPTRESPONSE']._serialized_end=1124
+  _globals['_PUBLISHPROMPTREQUEST']._serialized_start=1127
+  _globals['_PUBLISHPROMPTREQUEST']._serialized_end=1267
+  _globals['_PUBLISHPROMPTRESPONSE']._serialized_start=1269
+  _globals['_PUBLISHPROMPTRESPONSE']._serialized_end=1327
+  _globals['_DIFFPROMPTREQUEST']._serialized_start=1329
+  _globals['_DIFFPROMPTREQUEST']._serialized_end=1401
+  _globals['_DIFFPROMPTRESPONSE']._serialized_start=1403
+  _globals['_DIFFPROMPTRESPONSE']._serialized_end=1471
+  _globals['_WINDOW']._serialized_start=1473
+  _globals['_WINDOW']._serialized_end=1527
+  _globals['_CHANGE']._serialized_start=1530
+  _globals['_CHANGE']._serialized_end=1889
+  _globals['_PROMPTSERVICE']._serialized_start=1892
+  _globals['_PROMPTSERVICE']._serialized_end=2560
 # @@protoc_insertion_point(module_scope)

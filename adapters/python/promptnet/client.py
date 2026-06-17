@@ -31,8 +31,16 @@ class PromptClient:
         self._cache = {}
         self._nats_url = nats_url  # e.g. "nats://your-company.prompts.io:4222"
 
-    def get(self, uri):
-        """Fetch a prompt by promptnet:// URI. Returns the GetPromptResponse."""
+    def get(self, uri, ref=""):
+        """Fetch a prompt by promptnet:// URI. Returns the GetPromptResponse.
+
+        Pass `ref` (a branch name or commit hash) to pin a specific version
+        instead of the served HEAD; pinned reads are not cached.
+        """
+        if ref:
+            return self._stub.GetPrompt(
+                prompt_pb2.GetPromptRequest(uri=uri, ref=ref), metadata=self._md
+            )
         if self._cache_ttl:
             hit = self._cache.get(uri)
             if hit and hit[1] > time.monotonic():
@@ -55,9 +63,12 @@ class PromptClient:
         )
 
     def subscribe(self, uri, on_change):
-        """Register as a subscriber: call on_change(version_hash) whenever the
-        prompt at `uri` is republished (push). TTL polling via cache_ttl is the
-        pull side. Returns the daemon thread running the NATS subscription.
+        """Register as a subscriber: call on_change(version_hash, classification)
+        whenever the prompt at `uri` is republished (push). `classification` is
+        the semantic diff verdict (structural | localized tweak | minor edit |
+        new | ""), so an agent can auto-reload a tweak but hold a structural
+        change. TTL polling via cache_ttl is the pull side. Returns the daemon
+        thread running the NATS subscription.
 
         Requires `pip install nats-py` and nats_url set on the client.
         """
@@ -65,6 +76,7 @@ class PromptClient:
             raise ValueError("set nats_url on PromptClient to subscribe")
 
         import asyncio
+        import json
 
         import nats
 
@@ -77,7 +89,11 @@ class PromptClient:
                 async def handler(msg):
                     self._cache.pop(uri, None)  # drop stale cache
                     self.get(uri)  # refetch now so the next get() is warm
-                    on_change(msg.data.decode())
+                    try:
+                        ev = json.loads(msg.data.decode())
+                        on_change(ev.get("version", ""), ev.get("classification", ""))
+                    except (ValueError, AttributeError):
+                        on_change(msg.data.decode(), "")  # pre-0.7 bare-hash body
 
                 await nc.subscribe(subject, cb=handler)
                 while True:

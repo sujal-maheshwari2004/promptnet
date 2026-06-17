@@ -51,6 +51,11 @@ class PromptServiceStub:
                 request_serializer=promptnet_dot_v1_dot_prompt__pb2.DiffCommitsRequest.SerializeToString,
                 response_deserializer=promptnet_dot_v1_dot_prompt__pb2.DiffPromptResponse.FromString,
                 _registered_method=True)
+        self.SetBranch = channel.unary_unary(
+                '/promptnet.v1.PromptService/SetBranch',
+                request_serializer=promptnet_dot_v1_dot_prompt__pb2.SetBranchRequest.SerializeToString,
+                response_deserializer=promptnet_dot_v1_dot_prompt__pb2.SetBranchResponse.FromString,
+                _registered_method=True)
 
 
 class PromptServiceServicer:
@@ -111,6 +116,14 @@ class PromptServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def SetBranch(self, request, context):
+        """SetBranch points a branch at an existing commit — the rollback / pin path.
+        Moving "main" instantly changes the served version.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_PromptServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -148,6 +161,11 @@ def add_PromptServiceServicer_to_server(servicer, server):
                     servicer.DiffCommits,
                     request_deserializer=promptnet_dot_v1_dot_prompt__pb2.DiffCommitsRequest.FromString,
                     response_serializer=promptnet_dot_v1_dot_prompt__pb2.DiffPromptResponse.SerializeToString,
+            ),
+            'SetBranch': grpc.unary_unary_rpc_method_handler(
+                    servicer.SetBranch,
+                    request_deserializer=promptnet_dot_v1_dot_prompt__pb2.SetBranchRequest.FromString,
+                    response_serializer=promptnet_dot_v1_dot_prompt__pb2.SetBranchResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -341,6 +359,33 @@ class PromptService:
             '/promptnet.v1.PromptService/DiffCommits',
             promptnet_dot_v1_dot_prompt__pb2.DiffCommitsRequest.SerializeToString,
             promptnet_dot_v1_dot_prompt__pb2.DiffPromptResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SetBranch(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/promptnet.v1.PromptService/SetBranch',
+            promptnet_dot_v1_dot_prompt__pb2.SetBranchRequest.SerializeToString,
+            promptnet_dot_v1_dot_prompt__pb2.SetBranchResponse.FromString,
             options,
             channel_credentials,
             insecure,

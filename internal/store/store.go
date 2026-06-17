@@ -335,6 +335,59 @@ func (s *Store) Merge(ctx context.Context, uri, into, from, author, message stri
 	return s.commit(ctx, uri, into, src.Template, src.Slots, dst, srcHash, author, message)
 }
 
+// Resolve maps a ref to its commit. A ref is a branch name (resolved to its tip)
+// or a commit hash. Returns ErrNotFound if it is neither, or names a commit that
+// belongs to a different prompt.
+func (s *Store) Resolve(ctx context.Context, uri, ref string) (Commit, error) {
+	if h, err := s.tip(ctx, uri, ref); err == nil {
+		return s.GetCommit(ctx, h)
+	} else if !errors.Is(err, ErrBranchNotFound) {
+		return Commit{}, err
+	}
+	c, err := s.GetCommit(ctx, ref)
+	if err != nil {
+		return Commit{}, err
+	}
+	if c.URI != uri {
+		return Commit{}, ErrNotFound
+	}
+	return c, nil
+}
+
+// SetBranch points branch at an existing commit — rollback (move main back) or
+// pinning a branch. On main it re-materializes the served HEAD in the same
+// transaction. The commit must belong to uri. Returns the now-tip commit.
+func (s *Store) SetBranch(ctx context.Context, uri, branch, commitHash string) (Commit, error) {
+	c, err := s.GetCommit(ctx, commitHash)
+	if err != nil {
+		return Commit{}, err
+	}
+	if c.URI != uri {
+		return Commit{}, ErrNotFound
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Commit{}, err
+	}
+	defer tx.Rollback()
+
+	up := `INSERT INTO refs(uri,branch,commit_hash) VALUES(?,?,?)
+		ON CONFLICT(uri,branch) DO UPDATE SET commit_hash=excluded.commit_hash`
+	if _, err := tx.ExecContext(ctx, s.rebind(up), uri, branch, commitHash); err != nil {
+		return Commit{}, err
+	}
+	if branch == DefaultBranch {
+		slotsJSON, err := json.Marshal(c.Slots)
+		if err != nil {
+			return Commit{}, err
+		}
+		if _, err := tx.ExecContext(ctx, s.putQuery, uri, c.Template, string(slotsJSON), c.VersionHash); err != nil {
+			return Commit{}, err
+		}
+	}
+	return c, tx.Commit()
+}
+
 // GetCommit fetches a single commit by hash.
 func (s *Store) GetCommit(ctx context.Context, hash string) (Commit, error) {
 	return s.scanCommit(s.db.QueryRowContext(ctx, s.rebind(commitCols+` WHERE hash=?`), hash))

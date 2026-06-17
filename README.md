@@ -186,6 +186,21 @@ promptnet publish -uri promptnet://acme/support/agent -file v1.txt -slot name
 #   DiffCommits   uri, from_hash, to_hash              # semantic diff of any two commits
 ```
 
+### Pinning & rollback
+
+Agents do not have to track HEAD. `GetPrompt(uri, ref)` fetches a specific branch
+tip or commit, so an agent can **pin** a version and upgrade deliberately; the
+response carries the `commit_hash` to pin to. `SetBranch(uri, branch, commit)`
+points a branch at any existing commit — pointing `main` at an older commit is an
+instant, atomic **rollback** that immediately changes what every HEAD reader gets
+(cache invalidated, subscribers notified).
+
+```sh
+# (via a gRPC client)
+#   GetPrompt  uri, ref="v3"            # or a commit hash, or a branch name
+#   SetBranch  uri, branch="main", commit_hash=<old>   # roll the served version back
+```
+
 Behavior notes:
 
 - **Publishing to a non-`main` branch** records a commit but does not change the
@@ -211,8 +226,14 @@ service PromptService {
   rpc CreateBranch(CreateBranchRequest) returns (CreateBranchResponse);
   rpc MergeBranch(MergeBranchRequest)   returns (MergeBranchResponse);
   rpc DiffCommits(DiffCommitsRequest)   returns (DiffPromptResponse);   // diff any two commits
+  rpc SetBranch(SetBranchRequest)       returns (SetBranchResponse);    // rollback / pin a branch
 }
 ```
+
+`GetPromptRequest` takes an optional `ref` (a branch name or commit hash) to fetch
+a pinned version instead of the served HEAD; the response then includes the
+`commit_hash` served. `SetBranch` points a branch at an existing commit — moving
+`main` is an instant rollback.
 
 Key messages:
 
@@ -579,13 +600,28 @@ promptnet publish -uri promptnet://acme/support/agent -file v2.txt -slot name
 
 Each prompt maps to a NATS subject — `promptnet://acme/support/agent` →
 `promptnet.acme.support.agent`. An agent subscribes in one line (the push side);
-`cache_ttl` is the pull side:
+`cache_ttl` is the pull side.
+
+**Notifications carry the diff verdict.** Each event includes the
+[Semantic Propagation Diff](#semantic-propagation-diff) classification of the
+change (`structural | localized tweak | minor edit | new`), so an agent can
+auto-hot-reload a localized tweak but **hold a structural change for review** —
+the server already computed the diff on publish.
 
 ```python
 client = PromptClient(host="…:8443", cache_ttl=30, nats_url="nats://…:4222")
-client.subscribe("promptnet://acme/support/agent",
-                 lambda version: print("new version", version))  # needs `pip install nats-py`
+
+def on_change(version, classification):
+    if classification == "structural":
+        alert_a_human(version)          # reshapes meaning — gate it
+    else:
+        reload(version)                 # safe to pick up automatically
+
+client.subscribe("promptnet://acme/support/agent", on_change)  # needs `pip install nats-py`
 ```
+
+The `promptnet watch` CLI prints the verdict too, and exposes it to `-exec` hooks
+as `PROMPTNET_CLASS`.
 
 **Consistency model.** This layer is eventually consistent: a push can be missed
 (network), so the TTL is the convergence guarantee, not the push. Notify is
@@ -675,4 +711,4 @@ cmd/promptctl/main.go              Git-backed authoring CLI.
 | **v0.4** | Pub/sub distribution over embedded NATS, TTL sync, subscriber model |
 | **v0.5** | PostgreSQL backend, Redis L2 cache, org-scoped multi-token auth |
 | **v0.6** | Token expiry/rotation, mTLS, Prometheus metrics + audit log, per-org rate limiting, backup/restore, schema migrations |
-| **v0.7** | Server-side versioning: commit DAG, branches, merges, history, commit-to-commit diff |
+| **v0.7** | Server-side versioning: commit DAG, branches, merges, history, commit-to-commit diff, version pinning (`GetPrompt` by ref) + rollback (`SetBranch`), and diff-verdict change notifications |

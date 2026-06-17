@@ -161,6 +161,20 @@ func expand(s2 float64, w window, emb Embedder, cache map[string][]float32) (Dir
 	}
 }
 
+// Worst returns the most significant classification across all hunks —
+// structural > localized tweak > minor edit. "" for no changes. This is the
+// single verdict to attach to a change notification.
+func Worst(results []Result) string {
+	rank := map[string]int{"minor edit": 1, "localized tweak": 2, "structural": 3}
+	worst := ""
+	for _, r := range results {
+		if rank[r.Class] > rank[worst] {
+			worst = r.Class
+		}
+	}
+	return worst
+}
+
 func classify(s2 float64, up, down Direction, pf float64) string {
 	persists := func(d Direction) bool {
 		if !d.StoppedAtBoundary || len(d.Curve) == 0 {

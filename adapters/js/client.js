@@ -37,8 +37,10 @@ class PromptClient {
     );
   }
 
-  get(uri) {
-    return this._call("GetPrompt", { uri });
+  // get fetches the served HEAD, or a pinned version when `ref` (a branch name
+  // or commit hash) is given.
+  get(uri, ref = "") {
+    return this._call("GetPrompt", { uri, ref });
   }
 
   diff(uri, newTemplate) {
@@ -49,15 +51,26 @@ class PromptClient {
     return this._call("PublishPrompt", { uri, template, slots });
   }
 
-  // subscribe registers as a subscriber: onChange(versionHash) fires on each
-  // republish (push). Needs `npm i nats` and natsUrl set. Returns the connection.
+  // subscribe registers as a subscriber: onChange(versionHash, classification)
+  // fires on each republish (push). classification is the semantic diff verdict
+  // (structural | localized tweak | minor edit | new | ""), so an agent can
+  // auto-reload a tweak but hold a structural change. Needs `npm i nats` and
+  // natsUrl set. Returns the connection.
   async subscribe(uri, onChange) {
     if (!this._natsUrl) throw new Error("set natsUrl on PromptClient to subscribe");
     const { connect, StringCodec } = require("nats");
     const nc = await connect({ servers: this._natsUrl });
     const sc = StringCodec();
     (async () => {
-      for await (const m of nc.subscribe(subject(uri))) onChange(sc.decode(m.data));
+      for await (const m of nc.subscribe(subject(uri))) {
+        let ev;
+        try {
+          ev = JSON.parse(sc.decode(m.data));
+        } catch {
+          ev = { version: sc.decode(m.data) }; // pre-0.7 bare-hash body
+        }
+        onChange(ev.version || "", ev.classification || "");
+      }
     })();
     return nc;
   }

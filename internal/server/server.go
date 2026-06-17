@@ -18,10 +18,10 @@ import (
 	"promptnet/internal/validate"
 )
 
-// Notifier publishes version-change events. *pubsub.Bus implements it; nil
-// disables notifications.
+// Notifier publishes version-change events with the change's semantic diff
+// classification. *pubsub.Bus implements it; nil disables notifications.
 type Notifier interface {
-	Publish(uri, versionHash string) error
+	Publish(uri, versionHash, classification string) error
 }
 
 type Server struct {
@@ -54,9 +54,17 @@ func (s *Server) PublishPrompt(ctx context.Context, req *pb.PublishPromptRequest
 	// Idempotent on main: republishing the served HEAD's content is a no-op — no
 	// write, no notify. Lets `promptctl push` publish every prompt; only changed
 	// ones fire. (Branch publishes rely on commit-level idempotency instead.)
+	// On a real change, classify the edit so the notification carries the verdict.
+	class := ""
 	if onMain {
-		if prev, err := s.Store.Get(ctx, req.GetUri()); err == nil && prev.VersionHash == hash {
+		prev, err := s.Store.Get(ctx, req.GetUri())
+		switch {
+		case err == nil && prev.VersionHash == hash:
 			return &pb.PublishPromptResponse{VersionHash: hash}, nil
+		case err == nil:
+			class = s.classify(prev.Template, req.GetTemplate())
+		case errors.Is(err, store.ErrNotFound):
+			class = "new"
 		}
 	}
 
@@ -75,7 +83,7 @@ func (s *Server) PublishPrompt(ctx context.Context, req *pb.PublishPromptRequest
 		if s.Notifier != nil {
 			// Best-effort: the version is durably stored even if the notify fails;
 			// subscribers still converge on the next TTL poll.
-			_ = s.Notifier.Publish(req.GetUri(), hash)
+			_ = s.Notifier.Publish(req.GetUri(), hash, class)
 		}
 	}
 	return &pb.PublishPromptResponse{VersionHash: hash}, nil
@@ -85,6 +93,10 @@ func (s *Server) GetPrompt(ctx context.Context, req *pb.GetPromptRequest) (*pb.G
 	uri := req.GetUri()
 	if err := authorize(ctx, uri); err != nil {
 		return nil, err
+	}
+	// Fetch a pinned version (branch or commit) instead of the served HEAD.
+	if req.GetRef() != "" {
+		return s.getByRef(ctx, uri, req.GetRef())
 	}
 	if s.Cache != nil {
 		if resp, ok := s.Cache.Get(uri); ok {
@@ -216,6 +228,71 @@ func diffCommitErr(err error) error {
 		return status.Error(codes.NotFound, "commit not found")
 	}
 	return status.Errorf(codes.Internal, "%v", err)
+}
+
+// getByRef serves a specific version (branch tip or commit) rather than the
+// served HEAD — the version-pinning path. Not cached: pinned reads are rarer
+// than HEAD reads, and the cache is keyed by URI alone.
+func (s *Server) getByRef(ctx context.Context, uri, ref string) (*pb.GetPromptResponse, error) {
+	c, err := s.Store.Resolve(ctx, uri, ref)
+	if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrBranchNotFound) {
+		return nil, status.Errorf(codes.NotFound, "ref %q not found for %q", ref, uri)
+	}
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "resolve failed: %v", err)
+	}
+	if err := validate.Prompt(uri, c.Template, c.Slots); err != nil {
+		return nil, status.Errorf(codes.DataLoss, "stored prompt invalid: %v", err)
+	}
+	return &pb.GetPromptResponse{Uri: uri, Template: c.Template, Slots: c.Slots, VersionHash: c.VersionHash, CommitHash: c.Hash}, nil
+}
+
+// SetBranch points a branch at an existing commit (rollback / pin). Moving main
+// changes the served HEAD, so it invalidates the cache and notifies subscribers
+// with the classification of the change away from the old HEAD.
+func (s *Server) SetBranch(ctx context.Context, req *pb.SetBranchRequest) (*pb.SetBranchResponse, error) {
+	if err := authorize(ctx, req.GetUri()); err != nil {
+		return nil, err
+	}
+	if req.GetCommitHash() == "" {
+		return nil, status.Error(codes.InvalidArgument, "commit_hash required")
+	}
+	branch := branchOr(req.GetBranch())
+	prevT := ""
+	if branch == store.DefaultBranch {
+		if prev, err := s.Store.Get(ctx, req.GetUri()); err == nil {
+			prevT = prev.Template
+		}
+	}
+	c, err := s.Store.SetBranch(ctx, req.GetUri(), branch, req.GetCommitHash())
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, status.Errorf(codes.NotFound, "commit %q not found for %q", req.GetCommitHash(), req.GetUri())
+	}
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "set branch failed: %v", err)
+	}
+	if branch == store.DefaultBranch {
+		if s.Cache != nil {
+			s.Cache.Invalidate(req.GetUri())
+		}
+		if s.Notifier != nil {
+			_ = s.Notifier.Publish(req.GetUri(), c.VersionHash, s.classify(prevT, c.Template))
+		}
+	}
+	return &pb.SetBranchResponse{VersionHash: c.VersionHash}, nil
+}
+
+// classify returns the semantic diff verdict for an edit from oldT to newT, ""
+// when there is no embedder, no prior version, or the diff errors.
+func (s *Server) classify(oldT, newT string) string {
+	if s.Embedder == nil || oldT == "" {
+		return ""
+	}
+	res, err := semdiff.Analyze(s.Embedder, splitLines(oldT), splitLines(newT))
+	if err != nil {
+		return ""
+	}
+	return semdiff.Worst(res)
 }
 
 // diff runs the semantic propagation diff between two templates and maps it to

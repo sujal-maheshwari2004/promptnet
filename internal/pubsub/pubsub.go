@@ -6,6 +6,7 @@
 package pubsub
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -13,6 +14,14 @@ import (
 	natsd "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 )
+
+// Event is a version-change notification. Classification is the semantic diff
+// verdict (structural | localized tweak | minor edit | new | ""), so an agent
+// can auto-reload a localized tweak but hold a structural change for review.
+type Event struct {
+	Version        string `json:"version"`
+	Classification string `json:"classification,omitempty"`
+}
 
 // Subject maps a prompt URI to its NATS subject:
 //
@@ -51,9 +60,14 @@ func NewEmbedded(host string, port int) (*Bus, error) {
 	return &Bus{ns: ns, nc: nc}, nil
 }
 
-// Publish notifies subscribers that the prompt at uri now has versionHash.
-func (b *Bus) Publish(uri, versionHash string) error {
-	return b.nc.Publish(Subject(uri), []byte(versionHash))
+// Publish notifies subscribers that the prompt at uri now has versionHash, with
+// the semantic diff classification of the change.
+func (b *Bus) Publish(uri, versionHash, classification string) error {
+	body, err := json.Marshal(Event{Version: versionHash, Classification: classification})
+	if err != nil {
+		return err
+	}
+	return b.nc.Publish(Subject(uri), body)
 }
 
 // ClientURL is the nats:// address agents connect to.
@@ -78,9 +92,19 @@ func Connect(url string) (*Subscriber, error) {
 	return &Subscriber{nc: nc}, nil
 }
 
-// Subscribe calls fn(versionHash) on every version change of the prompt at uri.
-func (s *Subscriber) Subscribe(uri string, fn func(versionHash string)) (*nats.Subscription, error) {
-	return s.nc.Subscribe(Subject(uri), func(m *nats.Msg) { fn(string(m.Data)) })
+// Subscribe calls fn(event) on every version change of the prompt at uri.
+func (s *Subscriber) Subscribe(uri string, fn func(Event)) (*nats.Subscription, error) {
+	return s.nc.Subscribe(Subject(uri), func(m *nats.Msg) { fn(parseEvent(m.Data)) })
+}
+
+// parseEvent decodes a notification body; a non-JSON body is treated as a bare
+// version hash (back-compat with pre-0.7 publishers).
+func parseEvent(b []byte) Event {
+	var e Event
+	if err := json.Unmarshal(b, &e); err != nil || e.Version == "" {
+		return Event{Version: string(b)}
+	}
+	return e
 }
 
 func (s *Subscriber) Close() { s.nc.Drain() }

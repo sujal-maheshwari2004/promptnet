@@ -26,6 +26,7 @@ const (
 	PromptService_CreateBranch_FullMethodName  = "/promptnet.v1.PromptService/CreateBranch"
 	PromptService_MergeBranch_FullMethodName   = "/promptnet.v1.PromptService/MergeBranch"
 	PromptService_DiffCommits_FullMethodName   = "/promptnet.v1.PromptService/DiffCommits"
+	PromptService_SetBranch_FullMethodName     = "/promptnet.v1.PromptService/SetBranch"
 )
 
 // PromptServiceClient is the client API for PromptService service.
@@ -53,6 +54,9 @@ type PromptServiceClient interface {
 	// DiffCommits runs the semantic diff between any two commits of a prompt — the
 	// query-anything-in-history path.
 	DiffCommits(ctx context.Context, in *DiffCommitsRequest, opts ...grpc.CallOption) (*DiffPromptResponse, error)
+	// SetBranch points a branch at an existing commit — the rollback / pin path.
+	// Moving "main" instantly changes the served version.
+	SetBranch(ctx context.Context, in *SetBranchRequest, opts ...grpc.CallOption) (*SetBranchResponse, error)
 }
 
 type promptServiceClient struct {
@@ -133,6 +137,16 @@ func (c *promptServiceClient) DiffCommits(ctx context.Context, in *DiffCommitsRe
 	return out, nil
 }
 
+func (c *promptServiceClient) SetBranch(ctx context.Context, in *SetBranchRequest, opts ...grpc.CallOption) (*SetBranchResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetBranchResponse)
+	err := c.cc.Invoke(ctx, PromptService_SetBranch_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PromptServiceServer is the server API for PromptService service.
 // All implementations must embed UnimplementedPromptServiceServer
 // for forward compatibility.
@@ -158,6 +172,9 @@ type PromptServiceServer interface {
 	// DiffCommits runs the semantic diff between any two commits of a prompt — the
 	// query-anything-in-history path.
 	DiffCommits(context.Context, *DiffCommitsRequest) (*DiffPromptResponse, error)
+	// SetBranch points a branch at an existing commit — the rollback / pin path.
+	// Moving "main" instantly changes the served version.
+	SetBranch(context.Context, *SetBranchRequest) (*SetBranchResponse, error)
 	mustEmbedUnimplementedPromptServiceServer()
 }
 
@@ -188,6 +205,9 @@ func (UnimplementedPromptServiceServer) MergeBranch(context.Context, *MergeBranc
 }
 func (UnimplementedPromptServiceServer) DiffCommits(context.Context, *DiffCommitsRequest) (*DiffPromptResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DiffCommits not implemented")
+}
+func (UnimplementedPromptServiceServer) SetBranch(context.Context, *SetBranchRequest) (*SetBranchResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetBranch not implemented")
 }
 func (UnimplementedPromptServiceServer) mustEmbedUnimplementedPromptServiceServer() {}
 func (UnimplementedPromptServiceServer) testEmbeddedByValue()                       {}
@@ -336,6 +356,24 @@ func _PromptService_DiffCommits_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PromptService_SetBranch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetBranchRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PromptServiceServer).SetBranch(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PromptService_SetBranch_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PromptServiceServer).SetBranch(ctx, req.(*SetBranchRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PromptService_ServiceDesc is the grpc.ServiceDesc for PromptService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -370,6 +408,10 @@ var PromptService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DiffCommits",
 			Handler:    _PromptService_DiffCommits_Handler,
+		},
+		{
+			MethodName: "SetBranch",
+			Handler:    _PromptService_SetBranch_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

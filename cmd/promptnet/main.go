@@ -415,7 +415,7 @@ func watch(args []string) {
 	fs := flag.NewFlagSet("watch", flag.ExitOnError)
 	uri := fs.String("uri", "", "prompt uri to watch")
 	natsURL := fs.String("nats-url", "nats://127.0.0.1:4222", "NATS url the server exposes")
-	hook := fs.String("exec", "", "command to run on each change (via OS shell); new hash in PROMPTNET_VERSION env")
+	hook := fs.String("exec", "", "command to run on each change (via OS shell); new hash in PROMPTNET_VERSION, diff verdict in PROMPTNET_CLASS")
 	fs.Parse(args)
 	if *uri == "" {
 		log.Fatal("usage: promptnet watch -uri promptnet://... [-nats-url nats://host:4222] [-exec CMD]")
@@ -425,10 +425,14 @@ func watch(args []string) {
 		log.Fatal(err)
 	}
 	defer sub.Close()
-	if _, err := sub.Subscribe(*uri, func(hash string) {
-		log.Printf("%s updated -> %s", *uri, hash)
+	if _, err := sub.Subscribe(*uri, func(ev pubsub.Event) {
+		class := ev.Classification
+		if class == "" {
+			class = "unknown"
+		}
+		log.Printf("%s updated -> %s [%s]", *uri, ev.Version, class)
 		if *hook != "" {
-			runHook(*hook, *uri, hash)
+			runHook(*hook, *uri, ev.Version, ev.Classification)
 		}
 	}); err != nil {
 		log.Fatal(err)
@@ -439,14 +443,14 @@ func watch(args []string) {
 
 // runHook runs the -exec command with the changed prompt's uri/hash in the env,
 // through the platform's shell (sh on unix, cmd on Windows).
-func runHook(cmd, uri, hash string) {
+func runHook(cmd, uri, hash, class string) {
 	var c *exec.Cmd
 	if runtime.GOOS == "windows" {
 		c = exec.Command("cmd", "/c", cmd)
 	} else {
 		c = exec.Command("sh", "-c", cmd)
 	}
-	c.Env = append(os.Environ(), "PROMPTNET_URI="+uri, "PROMPTNET_VERSION="+hash)
+	c.Env = append(os.Environ(), "PROMPTNET_URI="+uri, "PROMPTNET_VERSION="+hash, "PROMPTNET_CLASS="+class)
 	c.Stdout, c.Stderr = os.Stdout, os.Stderr
 	if err := c.Run(); err != nil {
 		log.Printf("exec hook failed: %v", err)

@@ -1,6 +1,7 @@
 package pubsub
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -34,13 +35,14 @@ func TestPublishReceive(t *testing.T) {
 	}
 	nc.Flush() // ensure the subscription is registered before publishing
 
-	if err := bus.Publish("promptnet://o/r/p", "deadbeef"); err != nil {
+	if err := bus.Publish("promptnet://o/r/p", "deadbeef", "structural"); err != nil {
 		t.Fatal(err)
 	}
 	select {
 	case v := <-got:
-		if v != "deadbeef" {
-			t.Errorf("got version %q, want deadbeef", v)
+		// body is JSON carrying both the version and the classification
+		if !strings.Contains(v, "deadbeef") || !strings.Contains(v, "structural") {
+			t.Errorf("got body %q, want version+classification", v)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("no notification received")
@@ -60,19 +62,19 @@ func TestSubscriberHelper(t *testing.T) {
 	}
 	defer sub.Close()
 
-	got := make(chan string, 1)
-	if _, err := sub.Subscribe("promptnet://o/r/p", func(h string) { got <- h }); err != nil {
+	got := make(chan Event, 1)
+	if _, err := sub.Subscribe("promptnet://o/r/p", func(e Event) { got <- e }); err != nil {
 		t.Fatal(err)
 	}
 	sub.nc.Flush()
 
-	if err := bus.Publish("promptnet://o/r/p", "cafe123"); err != nil {
+	if err := bus.Publish("promptnet://o/r/p", "cafe123", "localized tweak"); err != nil {
 		t.Fatal(err)
 	}
 	select {
 	case v := <-got:
-		if v != "cafe123" {
-			t.Errorf("got %q, want cafe123", v)
+		if v.Version != "cafe123" || v.Classification != "localized tweak" {
+			t.Errorf("got %+v, want {cafe123, localized tweak}", v)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("subscriber got no notification")
