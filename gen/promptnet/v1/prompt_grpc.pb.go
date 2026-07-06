@@ -27,6 +27,7 @@ const (
 	PromptService_MergeBranch_FullMethodName   = "/promptnet.v1.PromptService/MergeBranch"
 	PromptService_DiffCommits_FullMethodName   = "/promptnet.v1.PromptService/DiffCommits"
 	PromptService_SetBranch_FullMethodName     = "/promptnet.v1.PromptService/SetBranch"
+	PromptService_ListPrompts_FullMethodName   = "/promptnet.v1.PromptService/ListPrompts"
 )
 
 // PromptServiceClient is the client API for PromptService service.
@@ -57,6 +58,10 @@ type PromptServiceClient interface {
 	// SetBranch points a branch at an existing commit — the rollback / pin path.
 	// Moving "main" instantly changes the served version.
 	SetBranch(ctx context.Context, in *SetBranchRequest, opts ...grpc.CallOption) (*SetBranchResponse, error)
+	// ListPrompts browses a repo like a filesystem: it returns every served-HEAD
+	// prompt whose URI starts with `prefix`, sorted. A "repo" is just a URI prefix;
+	// the caller derives the tree by splitting URIs on "/".
+	ListPrompts(ctx context.Context, in *ListPromptsRequest, opts ...grpc.CallOption) (*ListPromptsResponse, error)
 }
 
 type promptServiceClient struct {
@@ -147,6 +152,16 @@ func (c *promptServiceClient) SetBranch(ctx context.Context, in *SetBranchReques
 	return out, nil
 }
 
+func (c *promptServiceClient) ListPrompts(ctx context.Context, in *ListPromptsRequest, opts ...grpc.CallOption) (*ListPromptsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListPromptsResponse)
+	err := c.cc.Invoke(ctx, PromptService_ListPrompts_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PromptServiceServer is the server API for PromptService service.
 // All implementations must embed UnimplementedPromptServiceServer
 // for forward compatibility.
@@ -175,6 +190,10 @@ type PromptServiceServer interface {
 	// SetBranch points a branch at an existing commit — the rollback / pin path.
 	// Moving "main" instantly changes the served version.
 	SetBranch(context.Context, *SetBranchRequest) (*SetBranchResponse, error)
+	// ListPrompts browses a repo like a filesystem: it returns every served-HEAD
+	// prompt whose URI starts with `prefix`, sorted. A "repo" is just a URI prefix;
+	// the caller derives the tree by splitting URIs on "/".
+	ListPrompts(context.Context, *ListPromptsRequest) (*ListPromptsResponse, error)
 	mustEmbedUnimplementedPromptServiceServer()
 }
 
@@ -208,6 +227,9 @@ func (UnimplementedPromptServiceServer) DiffCommits(context.Context, *DiffCommit
 }
 func (UnimplementedPromptServiceServer) SetBranch(context.Context, *SetBranchRequest) (*SetBranchResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetBranch not implemented")
+}
+func (UnimplementedPromptServiceServer) ListPrompts(context.Context, *ListPromptsRequest) (*ListPromptsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListPrompts not implemented")
 }
 func (UnimplementedPromptServiceServer) mustEmbedUnimplementedPromptServiceServer() {}
 func (UnimplementedPromptServiceServer) testEmbeddedByValue()                       {}
@@ -374,6 +396,24 @@ func _PromptService_SetBranch_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PromptService_ListPrompts_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListPromptsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PromptServiceServer).ListPrompts(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PromptService_ListPrompts_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PromptServiceServer).ListPrompts(ctx, req.(*ListPromptsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PromptService_ServiceDesc is the grpc.ServiceDesc for PromptService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -412,6 +452,10 @@ var PromptService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetBranch",
 			Handler:    _PromptService_SetBranch_Handler,
+		},
+		{
+			MethodName: "ListPrompts",
+			Handler:    _PromptService_ListPrompts_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

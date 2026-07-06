@@ -184,6 +184,35 @@ func (s *Store) Dump(ctx context.Context) ([]Prompt, error) {
 	return out, rows.Err()
 }
 
+// escapeLike neutralizes LIKE metacharacters so a prefix is matched literally.
+// A URI segment may legitimately contain '_' (and, in theory, '%'); without this
+// they'd act as wildcards. Backslash escapes itself, '%', and '_' under ESCAPE '\'.
+func escapeLike(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s)
+}
+
+// List returns the served-HEAD prompts whose URI starts with prefix, sorted by
+// URI — the repo/tree browse. An empty prefix lists the whole store. Only uri and
+// version_hash are populated (a listing, not a fetch).
+func (s *Store) List(ctx context.Context, prefix string) ([]Prompt, error) {
+	q := s.rebind(`SELECT uri, version_hash FROM prompts WHERE uri LIKE ? ESCAPE '\' ORDER BY uri`)
+	rows, err := s.db.QueryContext(ctx, q, escapeLike(prefix)+"%")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Prompt
+	for rows.Next() {
+		var p Prompt
+		if err := rows.Scan(&p.URI, &p.VersionHash); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // Hash is the version identity: same content -> same hash -> same cache key.
 func Hash(template string, slots []string) string {
 	h := sha256.New()

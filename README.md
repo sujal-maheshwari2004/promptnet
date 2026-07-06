@@ -172,7 +172,13 @@ Storing a prompt whose template and slots disagree fails and writes nothing:
 
 - **URI** — every prompt has a unique address: `promptnet://org/repo/name`. It is
   stored and looked up as a plain string. The first path segment is the **org**,
-  used for auth scoping.
+  used for auth scoping; **everything after it is a free-form path of any depth**,
+  so a repo is a filesystem — `promptnet://acme/support/agents/tier1/greeting` is
+  a valid prompt. Only the leading `org` segment is load-bearing.
+- **Repo** — just a URI prefix (`promptnet://org/repo/…`); there is no separate
+  repo object. Browse one like a directory tree with `ListPrompts` /
+  `promptnet list` (see [`promptnet` CLI](#promptnet-cli)). Each prompt is
+  versioned independently — the tree is a view, history is per-file.
 - **Slot** — a `{name}` placeholder in the template. Declared slots must exactly
   match the placeholders the template uses (see [Validation](#validation)).
 - **Version hash** — a sha256 over template and slots. Identical content always
@@ -253,6 +259,7 @@ service PromptService {
   rpc MergeBranch(MergeBranchRequest)   returns (MergeBranchResponse);
   rpc DiffCommits(DiffCommitsRequest)   returns (DiffPromptResponse);   // diff any two commits
   rpc SetBranch(SetBranchRequest)       returns (SetBranchResponse);    // rollback / pin a branch
+  rpc ListPrompts(ListPromptsRequest)   returns (ListPromptsResponse);  // browse a repo (URI prefix) as a tree
 }
 ```
 
@@ -305,6 +312,7 @@ Errors are standard gRPC status codes:
 promptnet serve      run the gRPC server
 promptnet put        validate and store a prompt in a local database
 promptnet diff       semantic propagation diff (stored vs. an edited file) via a server
+promptnet list       browse a repo (URI prefix) like a filesystem, via a server
 promptnet publish    publish a new version through a server and notify subscribers
 promptnet watch      subscribe to a prompt's change events (NATS)
 promptnet backup     dump every prompt as JSON lines
@@ -322,6 +330,14 @@ Selected flags:
   `-force`, `-embed-url`, `-embed-model`.
 - **`diff` / `publish`** — `-addr`, `-uri`, `-file`, `-slot`, `-tls`, `-ca-cert`,
   `-cert`, `-key`.
+- **`list`** — `-addr`, `-prefix` (URI prefix to browse; empty = everything you're
+  scoped to), `-tls`, `-ca-cert`, `-cert`, `-key`.
+
+```sh
+promptnet list -prefix promptnet://acme/support/ -addr localhost:8443
+# promptnet://acme/support/tier1/agent   1e8284f35650
+# promptnet://acme/support/tier2/agent   80ec4e4d88e6
+```
 
 `put` runs a pre-commit semantic check: when it overwrites an existing prompt it
 diffs the stored version against your edit, prints the report, and **refuses a
@@ -342,6 +358,10 @@ prompt = client.get("promptnet://acme/onboarding/welcome")
 print(prompt.template)      # Hi {name}, welcome to {org}!
 print(list(prompt.slots))   # ['name', 'org']
 print(prompt.version_hash)  # 80ec4e4d…
+
+# Browse a repo (URI prefix) like a filesystem:
+for e in client.list("promptnet://acme/support/"):
+    print(e.uri, e.version_hash)
 ```
 
 `PromptClient(host, token=None, tls=False, ca_cert=None, cache_ttl=0, nats_url=None)`:
@@ -373,7 +393,8 @@ console.log(prompt.template, prompt.version_hash);
 
 `npm i @grpc/grpc-js @grpc/proto-loader` (and `nats` for `subscribe()`).
 
-> The bundled clients cover `get`, `diff`, and `subscribe`. The branch, merge,
+> The Python client covers `get`, `list`, `diff`, and `subscribe` (the Node client
+> covers `get`, `diff`, `publish`, `subscribe`). The branch, merge,
 > and history RPCs are reachable through the generated stubs (`gen/`,
 > `adapters/python/promptnet/v1/`) or any gRPC client using the `.proto`.
 

@@ -52,6 +52,8 @@ func main() {
 		put(os.Args[2:])
 	case "diff":
 		diff(os.Args[2:])
+	case "list":
+		list(os.Args[2:])
 	case "publish":
 		publish(os.Args[2:])
 	case "watch":
@@ -70,7 +72,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: promptnet serve|put|diff|publish|watch|backup|restore|migrate|gen-token [flags]")
+	fmt.Fprintln(os.Stderr, "usage: promptnet serve|put|diff|list|publish|watch|backup|restore|migrate|gen-token [flags]")
 	os.Exit(2)
 }
 
@@ -400,6 +402,30 @@ func diff(args []string) {
 		log.Fatal(err)
 	}
 	fmt.Print(semdiff.Format(fromProto(resp)))
+}
+
+// list browses a repo (a URI prefix) like a filesystem, printing each prompt's
+// URI and short version hash, one per line, sorted.
+func list(args []string) {
+	fs := flag.NewFlagSet("list", flag.ExitOnError)
+	addr := fs.String("addr", "localhost:8443", "server address")
+	prefix := fs.String("prefix", "", "URI prefix to list, e.g. promptnet://acme/support/ (empty = all)")
+	useTLS := fs.Bool("tls", false, "use TLS")
+	caCert := fs.String("ca-cert", "", "CA cert for TLS (optional)")
+	clientCert := fs.String("cert", "", "client cert for mTLS (optional)")
+	clientKey := fs.String("key", "", "client key for mTLS (optional)")
+	fs.Parse(args)
+
+	conn := dial(*addr, *useTLS, *caCert, *clientCert, *clientKey)
+	defer conn.Close()
+	resp, err := pb.NewPromptServiceClient(conn).ListPrompts(authCtx(),
+		&pb.ListPromptsRequest{Prefix: *prefix})
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, e := range resp.GetEntries() {
+		fmt.Printf("%s\t%s\n", e.GetUri(), e.GetVersionHash()[:12])
+	}
 }
 
 // publish stores a new prompt version on the server and notifies subscribers.

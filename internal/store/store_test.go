@@ -7,6 +7,72 @@ import (
 	"testing"
 )
 
+func TestListPrefix(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+
+	for _, uri := range []string{
+		"promptnet://acme/support/tier1/agent",
+		"promptnet://acme/support/tier2/agent",
+		"promptnet://acme/sales/intro",
+		"promptnet://acme/a_b/x", // underscore must be matched literally, not as a LIKE wildcard
+		"promptnet://acme/axb/x",
+	} {
+		if err := st.Put(ctx, Prompt{URI: uri, Template: "Hi {name}", Slots: []string{"name"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	uris := func(prefix string) []string {
+		ps, err := st.List(ctx, prefix)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, p := range ps {
+			out = append(out, p.URI)
+		}
+		return out
+	}
+
+	// Prefix scopes to the subtree, sorted, and excludes siblings.
+	got := uris("promptnet://acme/support/")
+	want := []string{"promptnet://acme/support/tier1/agent", "promptnet://acme/support/tier2/agent"}
+	if !equalStrings(got, want) {
+		t.Fatalf("support/ listing = %v, want %v", got, want)
+	}
+
+	// '_' is escaped: a_b/ must not match axb/.
+	if got := uris("promptnet://acme/a_b/"); !equalStrings(got, []string{"promptnet://acme/a_b/x"}) {
+		t.Fatalf("a_b/ listing = %v, want only the underscore path", got)
+	}
+
+	// Empty prefix lists everything, and version_hash is populated.
+	if all := uris(""); len(all) != 5 {
+		t.Fatalf("empty prefix listed %d, want 5", len(all))
+	}
+	ps, _ := st.List(ctx, "promptnet://acme/sales/")
+	if len(ps) != 1 || ps[0].VersionHash != Hash("Hi {name}", []string{"name"}) {
+		t.Fatalf("version_hash not populated in listing: %+v", ps)
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestPutGetRoundTrip(t *testing.T) {
 	st, err := Open(filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {

@@ -127,6 +127,25 @@ func (s *Server) GetPrompt(ctx context.Context, req *pb.GetPromptRequest) (*pb.G
 	return resp, nil
 }
 
+// ListPrompts browses a repo (a URI prefix) like a filesystem: it returns the
+// served-HEAD prompts whose URI starts with the prefix. Auth scopes by the
+// prefix's org, so a scoped token can only list within its own org.
+func (s *Server) ListPrompts(ctx context.Context, req *pb.ListPromptsRequest) (*pb.ListPromptsResponse, error) {
+	prefix := req.GetPrefix()
+	if err := authorize(ctx, prefix); err != nil {
+		return nil, err
+	}
+	prompts, err := s.Store.List(ctx, prefix)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "list failed: %v", err)
+	}
+	entries := make([]*pb.PromptEntry, len(prompts))
+	for i, p := range prompts {
+		entries[i] = &pb.PromptEntry{Uri: p.URI, VersionHash: p.VersionHash}
+	}
+	return &pb.ListPromptsResponse{Entries: entries}, nil
+}
+
 // DiffPrompt runs the Semantic Propagation Diff between the stored prompt (the
 // original) and the supplied edited template, using the server's embedder.
 func (s *Server) DiffPrompt(ctx context.Context, req *pb.DiffPromptRequest) (*pb.DiffPromptResponse, error) {

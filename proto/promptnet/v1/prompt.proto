@@ -29,6 +29,22 @@ service PromptService {
   // SetBranch points a branch at an existing commit — the rollback / pin path.
   // Moving "main" instantly changes the served version.
   rpc SetBranch(SetBranchRequest) returns (SetBranchResponse);
+
+  // ListPrompts browses a repo like a filesystem: it returns every served-HEAD
+  // prompt whose URI starts with `prefix`, sorted. A "repo" is just a URI prefix;
+  // the caller derives the tree by splitting URIs on "/".
+  rpc ListPrompts(ListPromptsRequest) returns (ListPromptsResponse);
+}
+
+message ListPromptsRequest {
+  string prefix = 1; // e.g. "promptnet://acme/support/"; empty = whole store (admin)
+}
+message ListPromptsResponse {
+  repeated PromptEntry entries = 1;
+}
+message PromptEntry {
+  string uri = 1;
+  string version_hash = 2;
 }
 
 message SetBranchRequest {
