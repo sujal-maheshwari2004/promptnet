@@ -25,8 +25,10 @@ class PromptClient:
             self._chan = grpc.insecure_channel(host)
         self._stub = prompt_pb2_grpc.PromptServiceStub(self._chan)
         self._md = [("authorization", f"Bearer {token}")] if token else None
-        # L1 (local) cache: uri -> (response, expiry). cache_ttl=0 disables it.
-        # The server only returns validated prompts, so anything cached is valid.
+        # L1 (local) cache: key -> (value, expiry). cache_ttl=0 disables it.
+        # Keys: a bare uri for get(); ("list", prefix) for list() so the two never
+        # collide. The server only returns validated prompts, so anything cached is
+        # valid; TTL is the staleness bound (a change shows up within cache_ttl s).
         self._cache_ttl = cache_ttl
         self._cache = {}
         self._nats_url = nats_url  # e.g. "nats://your-company.prompts.io:4222"
@@ -57,10 +59,21 @@ class PromptClient:
         (each with `uri` and `version_hash`) of every prompt whose URI starts with
         `prefix`, sorted. Empty prefix lists everything you're scoped to. Derive a
         tree by splitting each uri on "/".
+
+        Cached client-side for cache_ttl seconds (like get); within that window a
+        newly published prompt under `prefix` won't appear yet.
         """
-        return self._stub.ListPrompts(
+        key = ("list", prefix)
+        if self._cache_ttl:
+            hit = self._cache.get(key)
+            if hit and hit[1] > time.monotonic():
+                return hit[0]
+        entries = self._stub.ListPrompts(
             prompt_pb2.ListPromptsRequest(prefix=prefix), metadata=self._md
         ).entries
+        if self._cache_ttl:
+            self._cache[key] = (entries, time.monotonic() + self._cache_ttl)
+        return entries
 
     def diff(self, uri, new_template):
         """Semantic Propagation Diff of the stored prompt at `uri` vs an edited
