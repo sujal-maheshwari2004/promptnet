@@ -90,6 +90,7 @@ func serve(args []string) {
 	metricsAddr := fs.String("metrics-addr", ":2112", "Prometheus /metrics listen address; empty disables it")
 	rateLimit := fs.Float64("rate-limit", 0, "per-org request/sec limit; 0 disables")
 	rateBurst := fs.Int("rate-burst", 0, "per-org burst size; 0 = equal to -rate-limit")
+	seed := fs.Bool("seed", os.Getenv("PROMPTNET_SEED") != "false", "seed a demo prompt when it is absent (PROMPTNET_SEED=false disables)")
 	fs.Parse(args)
 	tokens := loadTokens(*tokensFile)
 	embedKey := os.Getenv("PROMPTNET_EMBED_KEY")
@@ -99,6 +100,10 @@ func serve(args []string) {
 		log.Fatal(err)
 	}
 	defer st.Close()
+
+	if *seed {
+		seedDemo(st)
+	}
 
 	emb := buildEmbedder(*embedURL, *embedModel, embedKey)
 	cache := buildCache(*redisURL, *cacheTTL)
@@ -153,6 +158,24 @@ func serve(args []string) {
 	if err := gs.Serve(lis); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// seedDemo commits a demo prompt on first start so `client.get` works out of the
+// box. It only writes when the demo URI is absent, so it is idempotent and never
+// touches user data. Failures are logged, not fatal — a missing demo must not
+// stop the server from serving.
+func seedDemo(st *store.Store) {
+	const uri = "promptnet://acme/onboarding/welcome"
+	if _, err := st.Get(context.Background(), uri); !errors.Is(err, store.ErrNotFound) {
+		return // already present (or a real error we'll surface on the first real request)
+	}
+	if _, err := st.Commit(context.Background(), uri, "main",
+		"Hi {name}, welcome to {org}!", []string{"name", "org"},
+		"promptnet", "seed: demo prompt"); err != nil {
+		log.Printf("seed demo prompt: %v", err)
+		return
+	}
+	log.Printf("seeded demo prompt %s", uri)
 }
 
 // serverCreds builds the server's TLS credentials. With clientCA set it

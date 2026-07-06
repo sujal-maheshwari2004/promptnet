@@ -27,7 +27,7 @@ of getting those two capabilities to production safely.
 
 - [Overview](#overview)
 - [Installation](#installation)
-- [Quick start](#quick-start)
+- [Quick start (3 commands)](#quick-start-3-commands)
 - [Concepts](#concepts)
 - [Versioning: commits, branches, and merges](#versioning-commits-branches-and-merges)
 - [gRPC API](#grpc-api)
@@ -110,7 +110,33 @@ Run with Docker instead:
 docker compose up        # builds and serves on :8443 (gRPC), :2112 (metrics), :4222 (NATS)
 ```
 
-## Quick start
+## Quick start (3 commands)
+
+No clone, no Go toolchain. The server auto-seeds a demo prompt on first start,
+so `get` works immediately. (Image/dist names are placeholders — see
+[Release history](#release-history) for the real ones.)
+
+```sh
+# 1. run the server (seeds promptnet://acme/onboarding/welcome on an empty db)
+docker run -d -p 8443:8443 -p 4222:4222 <registry>/<image>
+
+# 2. install the Python client (imports as `promptnet`)
+pip install <dist-name>
+```
+
+```python
+# 3. your code
+from promptnet import PromptClient
+
+client = PromptClient(host="localhost:8443")
+prompt = client.get("promptnet://acme/onboarding/welcome")
+print(prompt.template.format(name="Sujal", org="Acme"))   # Hi Sujal, welcome to Acme!
+```
+
+Set `PROMPTNET_SEED=false` (or `serve -seed=false`) to disable the demo prompt in
+real deployments.
+
+## Quick start (from source)
 
 ```sh
 # 1. write a template
@@ -327,8 +353,10 @@ print(prompt.version_hash)  # 80ec4e4d…
 - `cache_ttl` — client-side (L1) cache TTL in seconds.
 - `nats_url` — endpoint for `subscribe()`.
 
-Add the adapter to your path or pip-install it:
-`sys.path.insert(0, "adapters/python")`.
+Install with `pip install <dist-name>` (imports as `promptnet`). From a checkout,
+`pip install ./adapters/python` or
+`pip install "git+<repo>#subdirectory=adapters/python"` installs the same
+artifact; `subscribe()` needs the `[nats]` extra.
 
 ### JavaScript (Node)
 

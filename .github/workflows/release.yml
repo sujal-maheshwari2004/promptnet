@@ -1,0 +1,48 @@
+# Publishes on a v* tag only — merging this file uploads nothing.
+# Before the first real release: set the final image/dist names (see TODOs below),
+# and configure PyPI Trusted Publishing for this repo (or add a PYPI_API_TOKEN secret).
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write            # push to GHCR
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          # TODO: pick the final image name.
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+            ghcr.io/${{ github.repository }}:latest
+
+  pypi:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write            # PyPI Trusted Publishing (OIDC) — no stored token
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - run: pip install build
+      - run: python -m build
+        working-directory: adapters/python
+      # TODO: set the final dist name in adapters/python/pyproject.toml, then
+      # configure Trusted Publishing on PyPI for this repo/workflow.
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: adapters/python/dist
