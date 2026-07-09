@@ -21,8 +21,29 @@ function subject(uri) {
   return "promptnet." + uri.replace("promptnet://", "").replace(/\//g, ".");
 }
 
+// parseUrl splits a promptnet://<token>@host:port connection URL into { host,
+// token }. A value without a scheme is treated as a bare host.
+function parseUrl(raw) {
+  if (!raw.includes("://")) return { host: raw, token: undefined };
+  const u = new URL(raw);
+  const host = u.port ? `${u.hostname}:${u.port}` : u.hostname;
+  return { host, token: u.username || undefined };
+}
+
 class PromptClient {
-  constructor({ host, token, tls = false, natsUrl } = {}) {
+  // One connection string covers local/self-host/cloud: pass url or set
+  // PROMPTNET_URL (promptnet://<token>@host:port). An explicit host wins; an
+  // explicit token overrides the URL's token.
+  constructor({ host, token, tls = false, natsUrl, url } = {}) {
+    if (!host) {
+      const raw = url || process.env.PROMPTNET_URL;
+      if (raw) {
+        const parsed = parseUrl(raw);
+        host = parsed.host;
+        if (token === undefined) token = parsed.token;
+      }
+    }
+    if (!host) throw new Error("PromptClient needs host, url, or PROMPTNET_URL");
     const pkg = loadService();
     const creds = tls ? grpc.credentials.createSsl() : grpc.credentials.createInsecure();
     this._stub = new pkg.PromptService(host, creds);

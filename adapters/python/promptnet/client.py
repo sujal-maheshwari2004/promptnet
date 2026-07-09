@@ -1,7 +1,9 @@
 """PromptNet Python adapter. Works with LangChain, LangGraph, or raw Python."""
 
+import os
 import threading
 import time
+from urllib.parse import urlparse
 
 import grpc
 
@@ -12,10 +14,41 @@ def _subject(uri):
     return "promptnet." + uri.removeprefix("promptnet://").replace("/", ".")
 
 
+def _parse_url(raw):
+    """Split a promptnet://<token>@host:port connection URL into (host, token).
+    A value without a scheme is treated as a bare host. Either part may be empty.
+    """
+    if "://" not in raw:
+        return raw, None
+    u = urlparse(raw)
+    host = u.hostname or ""
+    if u.port:
+        host = f"{host}:{u.port}"
+    return host, u.username
+
+
 class PromptClient:
     def __init__(
-        self, host, token=None, tls=False, ca_cert=None, cache_ttl=0, nats_url=None
+        self,
+        host=None,
+        token=None,
+        tls=False,
+        ca_cert=None,
+        cache_ttl=0,
+        nats_url=None,
+        url=None,
     ):
+        # One connection string covers local/self-host/cloud: pass url= or set
+        # PROMPTNET_URL (promptnet://<token>@host:port). An explicit host= wins;
+        # an explicit token= overrides the URL's token.
+        if host is None:
+            raw = url or os.environ.get("PROMPTNET_URL")
+            if raw:
+                host, url_token = _parse_url(raw)
+                if token is None:
+                    token = url_token
+        if not host:
+            raise ValueError("PromptClient needs host=, url=, or PROMPTNET_URL")
         if tls:
             creds = grpc.ssl_channel_credentials(
                 root_certificates=open(ca_cert, "rb").read() if ca_cert else None

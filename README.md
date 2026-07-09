@@ -309,6 +309,7 @@ Errors are standard gRPC status codes:
 ## `promptnet` CLI
 
 ```text
+promptnet init       first-run setup: mint an admin token + print a PROMPTNET_URL
 promptnet serve      run the gRPC server
 promptnet put        validate and store a prompt in a local database
 promptnet diff       semantic propagation diff (stored vs. an edited file) via a server
@@ -364,11 +365,13 @@ for e in client.list("promptnet://acme/support/"):
     print(e.uri, e.version_hash)
 ```
 
-`PromptClient(host, token=None, tls=False, ca_cert=None, cache_ttl=0, nats_url=None)`:
+`PromptClient(host=None, token=None, tls=False, ca_cert=None, cache_ttl=0, nats_url=None, url=None)`:
 
-- `host` — `address:port` of the server.
+- `host` — `address:port` of the server. Optional if `url` or `PROMPTNET_URL` is set.
+- `url` — a full `promptnet://<token>@host:port` connection string; defaults to
+  `PROMPTNET_URL`. `PromptClient()` with no args connects using that env var.
 - `token` — sent as `authorization: Bearer <token>`; omit if the server has no
-  token configured.
+  token configured, or let the `url` carry it.
 - `tls` / `ca_cert` — use TLS, optionally pinning a CA certificate.
 - `cache_ttl` — client-side (L1) cache TTL in seconds.
 - `nats_url` — endpoint for `subscribe()`.
@@ -414,6 +417,23 @@ gates both writes (`put`, `publish`) and reads (`GetPrompt`), so the rules canno
 drift between them.
 
 ## Authentication & TLS
+
+**Setup.** `promptnet init` mints an admin (write) token, writes it to a tokens
+file, and prints a ready-to-use `PROMPTNET_URL` — the one-command first-run path.
+It refuses to overwrite an existing tokens file unless `-force`.
+
+```sh
+promptnet init                                   # -> tokens.txt + a PROMPTNET_URL to export
+promptnet serve -tokens-file tokens.txt
+export PROMPTNET_URL=promptnet://<token>@localhost:8443
+```
+
+**Connection URL.** Clients take one env var, `PROMPTNET_URL` (Strapi/mongodb
+style): `promptnet://<token>@host:port` carries both address and credential, so
+moving between local, self-hosted, and cloud is a one-var change. The Go CLI, the
+Python client, and the Node client all read it. Precedence: an explicit
+host/`-addr` wins over the URL's host; an explicit `PROMPTNET_TOKEN`/`token=`
+wins over the URL's token. A value with no scheme is treated as a bare host.
 
 **Auth.** Set `PROMPTNET_TOKEN` to require a bearer token; every request must then
 send `authorization: Bearer <token>` (checked in constant time). With no tokens
@@ -734,6 +754,7 @@ Environment variables:
 
 | Variable | Used by | Purpose |
 | --- | --- | --- |
+| `PROMPTNET_URL` | clients | `promptnet://<token>@host:port` — one string for address + credential |
 | `PROMPTNET_TOKEN` | server, clients | admin bearer token (server); credential (clients) |
 | `PROMPTNET_EMBED_URL` | server, `put` | OpenAI-compatible embeddings endpoint |
 | `PROMPTNET_EMBED_MODEL` | server, `put` | embedding model name |

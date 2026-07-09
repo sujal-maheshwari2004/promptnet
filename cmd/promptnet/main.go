@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
@@ -46,6 +47,8 @@ func main() {
 		usage()
 	}
 	switch os.Args[1] {
+	case "init":
+		initCmd(os.Args[2:])
 	case "serve":
 		serve(os.Args[2:])
 	case "put":
@@ -72,7 +75,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: promptnet serve|put|diff|list|publish|watch|backup|restore|migrate|gen-token [flags]")
+	fmt.Fprintln(os.Stderr, "usage: promptnet init|serve|put|diff|list|publish|watch|backup|restore|migrate|gen-token [flags]")
 	os.Exit(2)
 }
 
@@ -400,7 +403,7 @@ func splitLines(s string) []string {
 // embedding model the server was configured with.
 func diff(args []string) {
 	fs := flag.NewFlagSet("diff", flag.ExitOnError)
-	addr := fs.String("addr", "localhost:8443", "server address")
+	addr := fs.String("addr", envHost(), "server address (default: PROMPTNET_URL host)")
 	uri := fs.String("uri", "", "stored prompt uri (the original)")
 	file := fs.String("file", "-", "edited template file (- for stdin)")
 	useTLS := fs.Bool("tls", false, "use TLS")
@@ -427,7 +430,7 @@ func diff(args []string) {
 // URI and short version hash, one per line, sorted.
 func list(args []string) {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
-	addr := fs.String("addr", "localhost:8443", "server address")
+	addr := fs.String("addr", envHost(), "server address (default: PROMPTNET_URL host)")
 	prefix := fs.String("prefix", "", "URI prefix to list, e.g. promptnet://acme/support/ (empty = all)")
 	useTLS := fs.Bool("tls", false, "use TLS")
 	caCert := fs.String("ca-cert", "", "CA cert for TLS (optional)")
@@ -450,7 +453,7 @@ func list(args []string) {
 // publish stores a new prompt version on the server and notifies subscribers.
 func publish(args []string) {
 	fs := flag.NewFlagSet("publish", flag.ExitOnError)
-	addr := fs.String("addr", "localhost:8443", "server address")
+	addr := fs.String("addr", envHost(), "server address (default: PROMPTNET_URL host)")
 	uri := fs.String("uri", "", "promptnet:// uri")
 	file := fs.String("file", "-", "template file (- for stdin)")
 	useTLS := fs.Bool("tls", false, "use TLS")
@@ -624,6 +627,33 @@ func genToken() {
 	fmt.Println(hex.EncodeToString(b))
 }
 
+// initCmd is first-run setup (Strapi-style): it mints an admin write token,
+// writes it to a tokens file for `serve -tokens-file`, and prints a ready-to-use
+// PROMPTNET_URL. It refuses to clobber an existing tokens file unless -force, so
+// re-running never silently rotates the admin credential.
+func initCmd(args []string) {
+	fs := flag.NewFlagSet("init", flag.ExitOnError)
+	tokensFile := fs.String("tokens-file", "tokens.txt", "tokens file to create")
+	addr := fs.String("addr", "localhost:8443", "server address to embed in the printed PROMPTNET_URL")
+	force := fs.Bool("force", false, "overwrite an existing tokens file")
+	fs.Parse(args)
+
+	if _, err := os.Stat(*tokensFile); err == nil && !*force {
+		log.Fatalf("%s already exists; pass -force to overwrite", *tokensFile)
+	}
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		log.Fatal(err)
+	}
+	token := hex.EncodeToString(b)
+	if err := os.WriteFile(*tokensFile, []byte(token+" rw\n"), 0o600); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("wrote admin token to %s\n\n", *tokensFile)
+	fmt.Printf("  start server:  promptnet serve -tokens-file %s\n", *tokensFile)
+	fmt.Printf("  point client:  export PROMPTNET_URL=promptnet://%s@%s\n", token, *addr)
+}
+
 // dial opens a gRPC client connection, optionally over TLS. With clientCert/Key
 // set it presents a client certificate for mutual TLS.
 func dial(addr string, useTLS bool, caCert, clientCert, clientKey string) *grpc.ClientConn {
@@ -653,10 +683,46 @@ func dial(addr string, useTLS bool, caCert, clientCert, clientKey string) *grpc.
 	return conn
 }
 
-// authCtx attaches the bearer token from PROMPTNET_TOKEN, if set.
+// connURL parses PROMPTNET_URL — a single Strapi/mongodb-style connection string
+// promptnet://<token>@host:port — into a host and bearer token. Either part may
+// be absent; a value without a scheme is treated as a bare host. Empty env is
+// ("", ""). Lets a client point at local, self-hosted, or cloud by changing one
+// env var.
+//
+// ponytail: the token is the whole userinfo (everything before '@'); a token
+// containing ':' would be split by url. `gen-token` mints hex, so no colons.
+func connURL() (host, token string) {
+	raw := os.Getenv("PROMPTNET_URL")
+	if raw == "" {
+		return "", ""
+	}
+	if !strings.Contains(raw, "://") {
+		return raw, "" // bare host:port
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		log.Fatalf("bad PROMPTNET_URL %q: %v", raw, err)
+	}
+	return u.Host, u.User.Username()
+}
+
+// envHost is the default server address: PROMPTNET_URL's host, else localhost.
+func envHost() string {
+	if h, _ := connURL(); h != "" {
+		return h
+	}
+	return "localhost:8443"
+}
+
+// authCtx attaches the bearer token, preferring PROMPTNET_TOKEN, then the token
+// embedded in PROMPTNET_URL.
 func authCtx() context.Context {
 	ctx := context.Background()
-	if token := os.Getenv("PROMPTNET_TOKEN"); token != "" {
+	token := os.Getenv("PROMPTNET_TOKEN")
+	if token == "" {
+		_, token = connURL()
+	}
+	if token != "" {
 		ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+token)
 	}
 	return ctx
