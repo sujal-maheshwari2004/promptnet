@@ -6,6 +6,7 @@ package store
 
 import (
 	"context"
+	"crypto/cipher"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -72,6 +73,7 @@ type Store struct {
 	version  int
 	putQuery string
 	getQuery string
+	aead     cipher.AEAD // column encryption; nil = plaintext storage
 }
 
 // rebind converts ?-style placeholders to $1,$2,… for pgx; SQLite uses ? as-is.
@@ -118,6 +120,10 @@ func Open(dsn string) (*Store, error) {
 		s.putQuery = `INSERT INTO prompts(uri, template, slots, version_hash) VALUES(?,?,?,?)
 			ON CONFLICT(uri) DO UPDATE SET template=excluded.template, slots=excluded.slots, version_hash=excluded.version_hash`
 		s.getQuery = `SELECT uri, template, slots, version_hash FROM prompts WHERE uri=?`
+	}
+	if s.aead, err = loadCipher(); err != nil {
+		db.Close()
+		return nil, err
 	}
 	return s, nil
 }
@@ -176,6 +182,12 @@ func (s *Store) Dump(ctx context.Context) ([]Prompt, error) {
 		if err := rows.Scan(&p.URI, &p.Template, &slots, &p.VersionHash); err != nil {
 			return nil, err
 		}
+		if p.Template, err = s.open(p.Template); err != nil {
+			return nil, err
+		}
+		if slots, err = s.open(slots); err != nil {
+			return nil, err
+		}
 		if err := json.Unmarshal([]byte(slots), &p.Slots); err != nil {
 			return nil, err
 		}
@@ -228,7 +240,7 @@ func (s *Store) Put(ctx context.Context, p Prompt) error {
 		return err
 	}
 	p.VersionHash = Hash(p.Template, p.Slots)
-	_, err = s.db.ExecContext(ctx, s.putQuery, p.URI, p.Template, string(slots), p.VersionHash)
+	_, err = s.db.ExecContext(ctx, s.putQuery, p.URI, s.seal(p.Template), s.seal(string(slots)), p.VersionHash)
 	return err
 }
 
@@ -292,6 +304,7 @@ func (s *Store) commit(ctx context.Context, uri, branch, template string, slots 
 	}
 	vh := Hash(template, slots)
 	hash := CommitHash(vh, parent, parent2, author, message)
+	encT, encSlots := s.seal(template), s.seal(string(slotsJSON))
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -309,7 +322,7 @@ func (s *Store) commit(ctx context.Context, uri, branch, template string, slots 
 	if parent2 != "" {
 		p2 = parent2
 	}
-	if _, err := tx.ExecContext(ctx, s.rebind(ins), hash, uri, template, string(slotsJSON), vh, p, p2, author, message, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+	if _, err := tx.ExecContext(ctx, s.rebind(ins), hash, uri, encT, encSlots, vh, p, p2, author, message, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return "", err
 	}
 	up := `INSERT INTO refs(uri,branch,commit_hash) VALUES(?,?,?)
@@ -320,7 +333,7 @@ func (s *Store) commit(ctx context.Context, uri, branch, template string, slots 
 	// The prompts table is the materialized tip of the trunk — the served HEAD.
 	// Keep it in sync whenever a commit (or merge) moves main, in the same tx.
 	if branch == DefaultBranch {
-		if _, err := tx.ExecContext(ctx, s.putQuery, uri, template, string(slotsJSON), vh); err != nil {
+		if _, err := tx.ExecContext(ctx, s.putQuery, uri, encT, encSlots, vh); err != nil {
 			return "", err
 		}
 	}
@@ -410,7 +423,7 @@ func (s *Store) SetBranch(ctx context.Context, uri, branch, commitHash string) (
 		if err != nil {
 			return Commit{}, err
 		}
-		if _, err := tx.ExecContext(ctx, s.putQuery, uri, c.Template, string(slotsJSON), c.VersionHash); err != nil {
+		if _, err := tx.ExecContext(ctx, s.putQuery, uri, s.seal(c.Template), s.seal(string(slotsJSON)), c.VersionHash); err != nil {
 			return Commit{}, err
 		}
 	}
@@ -458,6 +471,12 @@ func (s *Store) scanCommit(row rowScanner) (Commit, error) {
 		return c, err
 	}
 	c.Parent, c.Parent2 = parent.String, parent2.String
+	if c.Template, err = s.open(c.Template); err != nil {
+		return c, err
+	}
+	if slots, err = s.open(slots); err != nil {
+		return c, err
+	}
 	if err := json.Unmarshal([]byte(slots), &c.Slots); err != nil {
 		return c, err
 	}
@@ -474,6 +493,12 @@ func (s *Store) Get(ctx context.Context, uri string) (Prompt, error) {
 		return p, ErrNotFound
 	}
 	if err != nil {
+		return p, err
+	}
+	if p.Template, err = s.open(p.Template); err != nil {
+		return p, err
+	}
+	if slots, err = s.open(slots); err != nil {
 		return p, err
 	}
 	if err := json.Unmarshal([]byte(slots), &p.Slots); err != nil {

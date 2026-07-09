@@ -511,6 +511,29 @@ A commit on `main` updates `commits`, `refs`, and `prompts` in one transaction,
 so the served HEAD always reflects the latest committed content. `version_hash`
 is `sha256(template + "\0" + slots)`, recomputed on every write.
 
+### Encryption at rest
+
+Set `PROMPTNET_ENCRYPTION_KEY` (base64 of a 32-byte key) and the `template` and
+`slots` columns are encrypted with **AES-256-GCM** before they touch the disk, in
+both the `prompts` and `commits` tables. Unset, storage is plaintext (unchanged).
+
+```sh
+export PROMPTNET_ENCRYPTION_KEY=$(head -c32 /dev/urandom | base64)
+promptnet serve -db promptnet.db
+```
+
+- **At rest, not end-to-end.** The server decrypts to run validation and the
+  semantic diff, so it holds the key; the guarantee is that a stolen database file
+  is useless without it. True E2E would move those server-side features to the
+  client.
+- **`version_hash` stays plaintext** (it is a hash, not the content), so dedup,
+  idempotency, and the cache key are unaffected.
+- **No migration to enable.** Encrypted values carry a marker, so rows written
+  before you set a key stay readable; new writes are encrypted. (Rotation and
+  bulk re-encryption of old rows are not automated — re-`put` to re-encrypt.)
+- Every process that touches the same database — `serve`, `put`, `backup` — must
+  share the key. Lose the key and the encrypted rows are unrecoverable.
+
 ### Migrations
 
 The schema is an ordered list of migration steps (`migrations` in
@@ -716,6 +739,7 @@ Environment variables:
 | `PROMPTNET_EMBED_MODEL` | server, `put` | embedding model name |
 | `PROMPTNET_EMBED_KEY` | server, `put` | API key for the embeddings endpoint |
 | `PROMPTNET_REDIS_URL` | server | Redis URL for a shared L2 cache |
+| `PROMPTNET_ENCRYPTION_KEY` | server, `put`, `backup` | base64 32-byte key; encrypts `template`/`slots` at rest (AES-256-GCM) |
 | `PROMPTNET_GIT_TOKEN` | `promptctl` | token for HTTPS git remotes |
 
 CLI flags are listed under [`promptnet` CLI](#promptnet-cli); the
