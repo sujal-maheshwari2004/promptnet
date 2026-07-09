@@ -419,24 +419,31 @@ drift between them.
 send `authorization: Bearer <token>` (checked in constant time). With no tokens
 configured the server runs open, for local development.
 
-For multiple keys and org scoping, pass `-tokens-file tokens.txt` with
-`token [org] [expiry]` lines:
+For multiple keys, org scoping, and write grants, pass `-tokens-file tokens.txt`
+with `token [org] [expiry] [rw]` lines:
 
 ```text
 # tokens.txt
-s3cr3t-admin                       # admin: every org, never expires
-acme-key      acme                 # scoped: only promptnet://acme/…
-rotating-key  acme  2026-12-31     # scoped + expires (date or RFC3339)
+s3cr3t-admin                       # admin, read-only: every org, never expires
+admin-rw                    rw     # admin, may write
+acme-read     acme                 # scoped read-only: only promptnet://acme/…
+acme-author   acme         rw      # scoped, may write
+rotating-key  acme  2026-12-31 rw  # scoped + expires (date or RFC3339) + write
 ```
 
 A bare token is **admin** (all orgs); a token with an org is scoped to
-`promptnet://org/…` and gets `PermissionDenied` for other orgs. `PROMPTNET_TOKEN`
-is always an admin key. A past expiry is rejected with `Unauthenticated`. Rotate
-by overlapping tokens: issue the new key, give the old one a near-future expiry,
-drop it once it lapses. `promptnet gen-token` mints a random token.
+`promptnet://org/…` and gets `PermissionDenied` for other orgs. **Write is
+opt-in:** a token may only publish, branch, merge, or roll back if its line
+carries the `rw` keyword — every token is read-only otherwise (`ro` is the
+explicit default). Read-only tokens get `PermissionDenied` on mutating RPCs.
+Fields after the token are matched by keyword, so `org`, `expiry`, and `rw` may
+appear in any order. `PROMPTNET_TOKEN` is always an admin write key. A past
+expiry is rejected with `Unauthenticated`. Rotate by overlapping tokens: issue
+the new key, give the old one a near-future expiry, drop it once it lapses.
+`promptnet gen-token` mints a random token.
 
-> Authorization is org-prefix scoping only; per-prompt or read-vs-write rules are
-> not modeled.
+> Authorization is org-prefix scoping plus a read/write grant; per-prompt rules
+> are not modeled.
 
 **TLS.** Pass `-tls-cert` and `-tls-key` to terminate TLS; on the client set
 `tls=True` (and optionally `ca_cert`). Without these the server listens in

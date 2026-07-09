@@ -54,6 +54,43 @@ func TestAuthInterceptor(t *testing.T) {
 	}
 }
 
+// writeAllowed runs the interceptor with the given token and reports whether a
+// mutating RPC (requireWrite) would be permitted for the resulting context.
+func writeAllowed(tokens map[string]Token, header string) (passed, canWrite bool) {
+	ctx := context.Background()
+	if header != "" {
+		ctx = metadata.NewIncomingContext(ctx, metadata.Pairs("authorization", header))
+	}
+	h := func(ctx context.Context, req any) (any, error) {
+		passed = true
+		canWrite = requireWrite(ctx) == nil
+		return nil, nil
+	}
+	AuthInterceptor(tokens)(ctx, nil, &grpc.UnaryServerInfo{}, h)
+	return passed, canWrite
+}
+
+func TestWriteScope(t *testing.T) {
+	tokens := map[string]Token{
+		"reader": {Org: "acme"},             // read-only
+		"author": {Org: "acme", Write: true}, // may write
+		"admin":  {Write: true},
+	}
+	if _, w := writeAllowed(tokens, "Bearer reader"); w {
+		t.Error("read-only token must be denied write")
+	}
+	if ok, w := writeAllowed(tokens, "Bearer author"); !ok || !w {
+		t.Error("rw token must be allowed to write")
+	}
+	if _, w := writeAllowed(tokens, "Bearer admin"); !w {
+		t.Error("admin rw token must be allowed to write")
+	}
+	// Auth disabled (empty token set) leaves writeKey unset — full access.
+	if ok, w := writeAllowed(map[string]Token{}, ""); !ok || !w {
+		t.Error("auth-disabled must permit writes")
+	}
+}
+
 func TestAuthorize(t *testing.T) {
 	scoped := context.WithValue(context.Background(), scopeKey{}, "acme")
 	if err := authorize(scoped, "promptnet://acme/r/p"); err != nil {

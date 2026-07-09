@@ -44,6 +44,9 @@ func (s *Server) PublishPrompt(ctx context.Context, req *pb.PublishPromptRequest
 	if err := authorize(ctx, req.GetUri()); err != nil {
 		return nil, err
 	}
+	if err := requireWrite(ctx); err != nil {
+		return nil, err
+	}
 	if err := validate.Prompt(req.GetUri(), req.GetTemplate(), req.GetSlots()); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid prompt: %v", err)
 	}
@@ -199,6 +202,9 @@ func (s *Server) CreateBranch(ctx context.Context, req *pb.CreateBranchRequest) 
 	if err := authorize(ctx, req.GetUri()); err != nil {
 		return nil, err
 	}
+	if err := requireWrite(ctx); err != nil {
+		return nil, err
+	}
 	if req.GetName() == "" {
 		return nil, status.Error(codes.InvalidArgument, "branch name required")
 	}
@@ -214,6 +220,9 @@ func (s *Server) CreateBranch(ctx context.Context, req *pb.CreateBranchRequest) 
 
 func (s *Server) MergeBranch(ctx context.Context, req *pb.MergeBranchRequest) (*pb.MergeBranchResponse, error) {
 	if err := authorize(ctx, req.GetUri()); err != nil {
+		return nil, err
+	}
+	if err := requireWrite(ctx); err != nil {
 		return nil, err
 	}
 	hash, err := s.Store.Merge(ctx, req.GetUri(), branchOr(req.GetInto()), req.GetFrom(), scopeOf(ctx), req.GetMessage())
@@ -271,6 +280,9 @@ func (s *Server) getByRef(ctx context.Context, uri, ref string) (*pb.GetPromptRe
 // with the classification of the change away from the old HEAD.
 func (s *Server) SetBranch(ctx context.Context, req *pb.SetBranchRequest) (*pb.SetBranchResponse, error) {
 	if err := authorize(ctx, req.GetUri()); err != nil {
+		return nil, err
+	}
+	if err := requireWrite(ctx); err != nil {
 		return nil, err
 	}
 	if req.GetCommitHash() == "" {
@@ -353,13 +365,27 @@ func splitLines(s string) []string {
 }
 
 type scopeKey struct{}
+type writeKey struct{}
 
-// Token is a bearer credential: the org it is scoped to ("" = admin, all orgs)
-// and an optional expiry (zero = never expires). Rotation is just overlapping
-// tokens — issue the new one, let the old one's Expires lapse, then drop it.
+// requireWrite gates mutating RPCs on the token's write capability. The key is
+// absent when auth is disabled or the caller is unscoped admin (full access), so
+// only an explicit read-only token (writeKey == false) is denied.
+func requireWrite(ctx context.Context) error {
+	if w, ok := ctx.Value(writeKey{}).(bool); ok && !w {
+		return status.Error(codes.PermissionDenied, "token is read-only")
+	}
+	return nil
+}
+
+// Token is a bearer credential: the org it is scoped to ("" = admin, all orgs),
+// an optional expiry (zero = never expires), and whether it may write. Write is
+// opt-in — a token authors only if Write is set; otherwise it is read-only.
+// Rotation is just overlapping tokens — issue the new one, let the old one's
+// Expires lapse, then drop it.
 type Token struct {
 	Org     string
 	Expires time.Time
+	Write   bool
 }
 
 // AuthInterceptor authenticates bearer tokens, rejects expired ones, and
@@ -370,10 +396,11 @@ func AuthInterceptor(tokens map[string]Token) grpc.UnaryServerInterceptor {
 		want    []byte
 		org     string
 		expires time.Time
+		write   bool
 	}
 	wants := make([]entry, 0, len(tokens))
 	for t, tok := range tokens {
-		wants = append(wants, entry{want: []byte("Bearer " + t), org: tok.Org, expires: tok.Expires})
+		wants = append(wants, entry{want: []byte("Bearer " + t), org: tok.Org, expires: tok.Expires, write: tok.Write})
 	}
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		if len(wants) == 0 {
@@ -385,11 +412,11 @@ func AuthInterceptor(tokens map[string]Token) grpc.UnaryServerInterceptor {
 				got = []byte(v[0])
 			}
 		}
-		ok, org := false, ""
+		ok, org, write := false, "", false
 		var expires time.Time
 		for _, w := range wants { // no early break: keep timing independent of which key matches
 			if subtle.ConstantTimeCompare(got, w.want) == 1 {
-				ok, org, expires = true, w.org, w.expires
+				ok, org, expires, write = true, w.org, w.expires, w.write
 			}
 		}
 		if !ok {
@@ -398,7 +425,8 @@ func AuthInterceptor(tokens map[string]Token) grpc.UnaryServerInterceptor {
 		if !expires.IsZero() && time.Now().After(expires) {
 			return nil, status.Error(codes.Unauthenticated, "token expired")
 		}
-		return handler(context.WithValue(ctx, scopeKey{}, org), req)
+		ctx = context.WithValue(ctx, scopeKey{}, org)
+		return handler(context.WithValue(ctx, writeKey{}, write), req)
 	}
 }
 

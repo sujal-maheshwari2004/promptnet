@@ -88,7 +88,7 @@ func serve(args []string) {
 	embedURL := fs.String("embed-url", os.Getenv("PROMPTNET_EMBED_URL"), "OpenAI-compatible /v1/embeddings URL for semantic diff (default: offline lexical embedder)")
 	embedModel := fs.String("embed-model", os.Getenv("PROMPTNET_EMBED_MODEL"), "embedding model name")
 	natsAddr := fs.String("nats-addr", "127.0.0.1:4222", "embedded NATS listen address for pub/sub; empty disables it")
-	tokensFile := fs.String("tokens-file", "", "file of `token [org]` lines (# comments ok); org scopes the token, blank = admin")
+	tokensFile := fs.String("tokens-file", "", "file of `token [org] [expiry] [rw]` lines (# comments ok); org scopes the token (blank = admin), rw grants write (default read-only)")
 	metricsAddr := fs.String("metrics-addr", ":2112", "Prometheus /metrics listen address; empty disables it")
 	rateLimit := fs.Float64("rate-limit", 0, "per-org request/sec limit; 0 disables")
 	rateBurst := fs.Int("rate-burst", 0, "per-org burst size; 0 = equal to -rate-limit")
@@ -236,17 +236,20 @@ func cacheName(redisURL string, ttl time.Duration) string {
 	}
 }
 
-// loadTokens reads bearer tokens, their org scope, and an optional expiry.
-// PROMPTNET_TOKEN is an admin token (all orgs, never expires). The file has
-// `token [org] [expiry]` lines — org scopes the token to promptnet://org/…
-// (blank = admin); expiry is a date (2006-01-02) or RFC3339 timestamp, after
-// which the token is rejected. Blank lines and # comments are ignored. An empty
-// result = auth disabled. To rotate: add the new token, give the old one a
-// near-future expiry, drop it once it lapses.
+// loadTokens reads bearer tokens, their org scope, an optional expiry, and an
+// optional write grant. PROMPTNET_TOKEN is an admin token (all orgs, never
+// expires, may write). File lines are `token [org] [expiry] [rw]` — org scopes
+// the token to promptnet://org/… (blank = admin); expiry is a date (2006-01-02)
+// or RFC3339 timestamp; the keyword `rw` grants write (default is read-only,
+// `ro` is the explicit no-op). Fields after the token are order-independent:
+// `rw`/`ro` is recognized by keyword, a date/timestamp as the expiry, anything
+// else as the org. Blank lines and # comments are ignored. An empty result =
+// auth disabled. To rotate: add the new token, give the old one a near-future
+// expiry, drop it once it lapses.
 func loadTokens(file string) map[string]server.Token {
 	tokens := map[string]server.Token{}
 	if t := os.Getenv("PROMPTNET_TOKEN"); t != "" {
-		tokens[t] = server.Token{} // admin, never expires
+		tokens[t] = server.Token{Write: true} // admin, never expires
 	}
 	if file != "" {
 		b, err := os.ReadFile(file)
@@ -260,16 +263,32 @@ func loadTokens(file string) map[string]server.Token {
 			}
 			fields := strings.Fields(line)
 			tok := server.Token{}
-			if len(fields) > 1 {
-				tok.Org = fields[1]
-			}
-			if len(fields) > 2 {
-				tok.Expires = parseExpiry(fields[2])
+			for _, f := range fields[1:] {
+				switch {
+				case f == "rw":
+					tok.Write = true
+				case f == "ro":
+					// explicit read-only (the default); no-op
+				case isExpiry(f):
+					tok.Expires = parseExpiry(f)
+				default:
+					tok.Org = f
+				}
 			}
 			tokens[fields[0]] = tok
 		}
 	}
 	return tokens
+}
+
+// isExpiry reports whether s parses as a token expiry (date or RFC3339), so the
+// token-line parser can tell an expiry from an org name.
+func isExpiry(s string) bool {
+	if _, err := time.Parse("2006-01-02", s); err == nil {
+		return true
+	}
+	_, err := time.Parse(time.RFC3339, s)
+	return err == nil
 }
 
 // parseExpiry accepts a bare date (2006-01-02) or an RFC3339 timestamp.
